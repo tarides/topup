@@ -7,11 +7,16 @@ type binding = {
   preview : string option;
 }
 
+type overflow = Spill.overflow = { path : string; total_bytes : int }
+
 type eval_result = {
   value_repr : string option;
+  value_repr_overflow : overflow option;
   ty : string option;
   stdout : string;
+  stdout_overflow : overflow option;
   stderr : string;
+  stderr_overflow : overflow option;
   warnings : string list;
   error : Error.t option;
 }

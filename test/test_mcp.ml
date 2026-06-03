@@ -110,9 +110,52 @@ let test_initialize_list_call () =
       (match get_in payload [ "value_repr" ] with
        | `String "42" -> ()
        | _ -> fail "eval value_repr != 42");
+      List.iter
+        (fun field ->
+          match get_in payload [ field ] with
+          | `Null -> ()
+          | _ -> fail (field ^ " unexpectedly set for small eval"))
+        [ "value_repr_overflow"; "stdout_overflow"; "stderr_overflow" ];
+      let r2 =
+        let params =
+          `Assoc
+            [
+              ("name", `String "eval");
+              ( "arguments",
+                `Assoc
+                  [
+                    ( "source",
+                      `String
+                        "print_string (String.make 20000 'y');;" );
+                  ] );
+            ]
+        in
+        Mcp.Rpc.write_message oc (request 4 "tools/call" ~params ());
+        read_response_id ic
+      in
+      let text2 =
+        match get_in r2 [ "result"; "content" ] with
+        | `List [ `Assoc fs ] -> (
+            match List.assoc_opt "text" fs with
+            | Some (`String s) -> s
+            | _ -> fail "no text in content")
+        | _ -> fail "content shape"
+      in
+      let payload2 = Yojson.Safe.from_string text2 in
+      (match get_in payload2 [ "stdout_overflow"; "path" ] with
+       | `String p when Sys.file_exists p -> ()
+       | _ -> fail "stdout_overflow.path missing or not a file");
+      (match get_in payload2 [ "stdout_overflow"; "total_bytes" ] with
+       | `Int n when n >= 20000 -> ()
+       | _ -> fail "stdout_overflow.total_bytes wrong");
       ())
 
 let () =
+  let spill_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-mcp-test-spill-%d" (Unix.getpid ()))
+  in
+  Unix.putenv "TOPUP_SPILL_DIR" spill_dir;
   test_rpc_roundtrip ();
   test_initialize_list_call ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in

@@ -5,18 +5,6 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## Oversized-output policy
-
-`value_repr` and `stdout` can both grow unboundedly — a `Bigarray.t`
-pretty-prints arbitrarily large with empty stdout; a chatty phrase
-blows the context window. mcp-repl's answer is
-`--oversized-output {pager,files}`: elide and offer pagination, or
-write to a structured file bundle and return a path. Pick one,
-implement it for both `stdout` and `value_repr`, document the cap and
-escape hatches.
-
-DESIGN.md, "Must answer before phase-1 ships".
-
 ## Unix-socket transport for `topup-mcp`
 
 Add a `--socket <path>` mode that binds a Unix socket and dispatches

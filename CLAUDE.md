@@ -21,6 +21,7 @@ native implementation. The libraries set `(modes byte)`, the binary uses
 ```
 lib/topup/    Session API around Toploop (eval, env, lookup, reset, cancel)
               + Capture (fd dup2 + drain threads) + Pretty (depth/byte caps)
+              + Spill (oversized-output overflow files)
               + Error (Location.error_of_exn → structured JSON)
 lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio: Rpc, Server, Tools
 bin/main.ml   wires Session + Server to stdin/stdout; reads TOPUP_LOG env var
@@ -50,6 +51,29 @@ test/         test_session.ml (unit) + test_mcp.ml (in-process integration)
 - `is_user_origin t file`: a binding is "user code" iff its `val_loc.file`
   is `"<eval>"` or matches `t.log_path`. The env filter defaults to user
   origin; `~all:true` brings stdlib + libraries back.
+
+## Oversized output
+
+`eval` returns three potentially-large fields: `value_repr`, `stdout`,
+`stderr`. Each is capped inline (`Pretty.max_bytes`,
+`Pretty.max_stdout_bytes`, `Pretty.max_stderr_bytes`; all default 8 KiB).
+When the cap is exceeded, `Spill.apply` truncates the inline string with
+a marker `…[+N bytes; full at <path>]` and writes the full content to a
+spill file. The eval result gains a sibling `*_overflow` field
+(`{ path; total_bytes }`) the consumer can use directly.
+
+- Spill directory: `$TOPUP_SPILL_DIR` if set, else `$HOME/.topup/spill`.
+- `TOPUP_SPILL_DIR=off` disables spilling entirely — the inline marker
+  is still added (`…[+N bytes]`) but no file is written and
+  `*_overflow` stays `null`.
+- The directory is wiped at `Session.create` so spill files do not
+  accumulate across restarts. Files survive `reset()` within a session
+  so paths in earlier responses stay readable.
+- Each spill file is hard-capped at `!Pretty.max_spill_bytes` (10 MiB
+  default); content beyond gets a tail `…[+N bytes dropped]` marker.
+- Long type strings (in `eval`'s `type` field and `env`/`lookup`
+  bindings) still use the cheap `Pretty.truncate_bytes` path — they
+  are not spilled.
 
 ## Persistent phrase log
 

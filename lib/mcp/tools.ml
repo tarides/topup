@@ -37,7 +37,11 @@ let descriptors : Yojson.Safe.t list =
   [
     tool_def ~name:"eval"
       ~description:
-        "Evaluate one or more OCaml phrases in the persistent toplevel session."
+        "Evaluate one or more OCaml phrases in the persistent toplevel \
+         session. Oversized value_repr/stdout/stderr are truncated inline \
+         with a '…[+N bytes; full at <path>]' marker; the full content is \
+         written to the path advertised in the matching '*_overflow' field. \
+         Read that path if the full content is needed."
       ~schema:eval_schema;
     tool_def ~name:"env"
       ~description:
@@ -82,13 +86,24 @@ let json_of_error (e : Error.t) : Yojson.Safe.t =
 
 let string_opt = function Some s -> `String s | None -> `Null
 
+let json_of_overflow (o : Session.overflow) : Yojson.Safe.t =
+  `Assoc
+    [ ("path", `String o.path); ("total_bytes", `Int o.total_bytes) ]
+
+let overflow_opt = function
+  | Some o -> json_of_overflow o
+  | None -> `Null
+
 let json_of_eval_result (r : Session.eval_result) : Yojson.Safe.t =
   `Assoc
     [
       ("value_repr", string_opt r.value_repr);
+      ("value_repr_overflow", overflow_opt r.value_repr_overflow);
       ("type", string_opt r.ty);
       ("stdout", `String r.stdout);
+      ("stdout_overflow", overflow_opt r.stdout_overflow);
       ("stderr", `String r.stderr);
+      ("stderr_overflow", overflow_opt r.stderr_overflow);
       ("warnings", `List (List.map (fun s -> `String s) r.warnings));
       ( "error",
         match r.error with Some e -> json_of_error e | None -> `Null );

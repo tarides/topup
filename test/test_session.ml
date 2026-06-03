@@ -6,7 +6,29 @@ let check label want got =
     exit 1
   end
 
+let contains_sub hay needle =
+  let n = String.length hay and k = String.length needle in
+  let rec loop i =
+    if i + k > n then false
+    else if String.sub hay i k = needle then true
+    else loop (i + 1)
+  in
+  k > 0 && loop 0
+
+let read_file path =
+  let ic = open_in path in
+  let n = in_channel_length ic in
+  let buf = Bytes.create n in
+  really_input ic buf 0 n;
+  close_in ic;
+  Bytes.unsafe_to_string buf
+
 let () =
+  let spill_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-spill-%d" (Unix.getpid ()))
+  in
+  Unix.putenv "TOPUP_SPILL_DIR" spill_dir;
   let s = Session.create () in
   let r1 = Session.eval s "let x = 1 + 2;;" in
   check "let-x value_repr" "3" (Option.value ~default:"<none>" r1.value_repr);
@@ -118,12 +140,66 @@ let () =
   in
   Topup.Pretty.max_bytes := saved;
   (match r_tiny.value_repr with
-   | Some s when String.length s <= 16 + 32 && String.length s > 16 -> ()
+   | Some s when String.length s > 16 -> ()
    | Some s ->
        Printf.printf "FAIL tight cap: got %d bytes: %s\n" (String.length s) s;
        exit 1
    | None ->
        print_endline "FAIL tight cap: no value_repr";
+       exit 1);
+  (match r_tiny.value_repr_overflow with
+   | Some { path; total_bytes } when Sys.file_exists path && total_bytes > 16 ->
+       let full = read_file path in
+       if not (contains_sub full "12345678901234567890") then begin
+         Printf.printf "FAIL value_repr spill content: %S\n" full;
+         exit 1
+       end
+   | Some _ ->
+       print_endline "FAIL value_repr spill: file missing or bad total_bytes";
+       exit 1
+   | None ->
+       print_endline "FAIL value_repr spill: no overflow record";
+       exit 1);
+  let r_chatty =
+    Session.eval s
+      "let chunk = String.make 200 'x' in for _ = 1 to 100 do print_string \
+       chunk done;;"
+  in
+  if String.length r_chatty.stdout > !Topup.Pretty.max_stdout_bytes + 256 then
+  begin
+    Printf.printf "FAIL stdout inline cap: %d bytes\n"
+      (String.length r_chatty.stdout);
+    exit 1
+  end;
+  if not (contains_sub r_chatty.stdout "full at ") then begin
+    print_endline "FAIL stdout marker missing spill path";
+    exit 1
+  end;
+  (match r_chatty.stdout_overflow with
+   | Some { path; total_bytes } when Sys.file_exists path && total_bytes = 20000
+     ->
+       let full = read_file path in
+       if String.length full < 20000 then begin
+         Printf.printf "FAIL stdout spill truncated to %d bytes\n"
+           (String.length full);
+         exit 1
+       end;
+       if String.sub full 0 200 <> String.make 200 'x' then begin
+         print_endline "FAIL stdout spill content mismatch";
+         exit 1
+       end
+   | Some { total_bytes; _ } ->
+       Printf.printf "FAIL stdout spill record total_bytes=%d\n" total_bytes;
+       exit 1
+   | None ->
+       print_endline "FAIL stdout spill: no overflow record";
+       exit 1);
+  let r_quiet = Session.eval s "1 + 1;;" in
+  (match (r_quiet.value_repr_overflow, r_quiet.stdout_overflow,
+          r_quiet.stderr_overflow) with
+   | None, None, None -> ()
+   | _ ->
+       print_endline "FAIL small eval reported overflow";
        exit 1);
   let log_path =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -134,23 +210,7 @@ let () =
   let _ = Session.eval s_logged "let logged_one = 11;;" in
   let _ = Session.eval s_logged "let logged_two = logged_one * 4;;" in
   let _ = Session.eval s_logged "let _bad = 1 + true;;" in
-  let logged =
-    let ic = open_in log_path in
-    let n = in_channel_length ic in
-    let buf = Bytes.create n in
-    really_input ic buf 0 n;
-    close_in ic;
-    Bytes.unsafe_to_string buf
-  in
-  let contains_sub hay needle =
-    let n = String.length hay and k = String.length needle in
-    let rec loop i =
-      if i + k > n then false
-      else if String.sub hay i k = needle then true
-      else loop (i + 1)
-    in
-    k > 0 && loop 0
-  in
+  let logged = read_file log_path in
   if not (contains_sub logged "logged_one") then begin
     Printf.printf "FAIL log missing entries; got: %S\n" logged;
     exit 1
@@ -161,14 +221,7 @@ let () =
   end;
   Session.reset s_logged;
   let _ = Session.eval s_logged (Printf.sprintf "#use %S;;" log_path) in
-  let logged_after_replay =
-    let ic = open_in log_path in
-    let n = in_channel_length ic in
-    let buf = Bytes.create n in
-    really_input ic buf 0 n;
-    close_in ic;
-    Bytes.unsafe_to_string buf
-  in
+  let logged_after_replay = read_file log_path in
   if contains_sub logged_after_replay "#use" then begin
     print_endline "FAIL log captured a #use directive (would cause replay recursion)";
     exit 1

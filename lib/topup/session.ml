@@ -5,11 +5,16 @@ type binding = {
   preview : string option;
 }
 
+type overflow = Spill.overflow = { path : string; total_bytes : int }
+
 type eval_result = {
   value_repr : string option;
+  value_repr_overflow : overflow option;
   ty : string option;
   stdout : string;
+  stdout_overflow : overflow option;
   stderr : string;
+  stderr_overflow : overflow option;
   warnings : string list;
   error : Error.t option;
 }
@@ -18,6 +23,7 @@ type t = {
   mutable history : string list;
   main_pid : int;
   log_path : string option;
+  spill : Spill.t;
 }
 
 let initialized = ref false
@@ -73,22 +79,29 @@ let create ?log_path () =
     Sys.catch_break true;
     initialized := true
   end;
-  { history = []; main_pid = Unix.getpid (); log_path }
+  {
+    history = [];
+    main_pid = Unix.getpid ();
+    log_path;
+    spill = Spill.create ();
+  }
 
 let format_to_string printer x =
   let buf = Buffer.create 64 in
   let ppf = Format.formatter_of_buffer buf in
   printer ppf x;
   Format.pp_print_flush ppf ();
-  Pretty.truncate_bytes (Buffer.contents buf)
+  Buffer.contents buf
 
 let print_value ppf v = !Oprint.out_value ppf v
 let print_type = Format_doc.compat !Oprint.out_type
 
+let format_type_string t = Pretty.truncate_bytes (format_to_string print_type t)
+
 let extract_outcome (p : Outcometree.out_phrase) =
   match p with
   | Ophr_eval (v, t) ->
-      (Some (format_to_string print_value v), Some (format_to_string print_type t))
+      (Some (format_to_string print_value v), Some (format_type_string t))
   | Ophr_signature items ->
       let rec last v_acc ty_acc = function
         | [] -> (v_acc, ty_acc)
@@ -96,7 +109,7 @@ let extract_outcome (p : Outcometree.out_phrase) =
             let v_str =
               Option.map (fun v -> format_to_string print_value v) vopt
             in
-            let ty_str = Some (format_to_string print_type vd.oval_type) in
+            let ty_str = Some (format_type_string vd.oval_type) in
             last
               (match v_str with Some _ -> v_str | None -> v_acc)
               ty_str rest
@@ -182,11 +195,29 @@ let eval ?timeout t source =
   Toploop.print_out_phrase := prev_print;
   t.history <- source :: t.history;
   if !error = None then log_phrase t source;
+  let value_repr_out, value_repr_overflow =
+    match !value_repr with
+    | None -> (None, None)
+    | Some s ->
+        let s', o =
+          Spill.apply t.spill ~field:"value_repr" ~limit:!Pretty.max_bytes s
+        in
+        (Some s', o)
+  in
+  let stdout_out, stdout_overflow =
+    Spill.apply t.spill ~field:"stdout" ~limit:!Pretty.max_stdout_bytes out
+  in
+  let stderr_out, stderr_overflow =
+    Spill.apply t.spill ~field:"stderr" ~limit:!Pretty.max_stderr_bytes err
+  in
   {
-    value_repr = !value_repr;
+    value_repr = value_repr_out;
+    value_repr_overflow;
     ty = !ty;
-    stdout = out;
-    stderr = err;
+    stdout = stdout_out;
+    stdout_overflow;
+    stderr = stderr_out;
+    stderr_overflow;
     warnings = [];
     error = !error;
   }

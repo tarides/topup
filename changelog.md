@@ -3,6 +3,55 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-03 — Oversized-output policy: spill to files
+
+Closed the first phase-1 backlog item. Picked the **files** half of
+mcp-repl's `--oversized-output {pager,files}` split: when an eval's
+`value_repr`, `stdout`, or `stderr` exceeds its inline cap, the field
+is truncated with a `…[+N bytes; full at <path>]` marker and the full
+content is written to a per-process spill directory. The eval result
+gains three sibling fields — `value_repr_overflow`, `stdout_overflow`,
+`stderr_overflow` — each `null` or `{ path; total_bytes }`.
+
+Choice of *files* over *pager*: the agent's existing `Read` tool is the
+client. No new MCP tool, no per-eval cursor state, no schema growth on
+the request side. Matches topup's externalized-memory thesis — agent
+holds the path, tool holds the content.
+
+- New `lib/topup/spill.ml` + `.mli`: session-scoped overflow manager.
+  Resolves the directory ($TOPUP_SPILL_DIR, else $HOME/.topup/spill;
+  `off` disables), wipes it at `Session.create`, hands out sequence-
+  numbered `NN-<field>.txt` files. Hard ceiling per file at
+  `!Pretty.max_spill_bytes` (10 MiB default) with a tail elision marker
+  so a runaway print loop cannot fill the disk.
+- `Pretty` gains `max_stdout_bytes`, `max_stderr_bytes`, and
+  `max_spill_bytes` refs alongside the existing `max_bytes`. All
+  default to 8 KiB except `max_spill_bytes` (10 MiB).
+- `Session.eval` now runs every large output field through
+  `Spill.apply` after capture. `format_to_string` was refactored to
+  return raw content; the cheap inline-elision path (used for type
+  strings in `env` and `lookup`) goes through `Pretty.truncate_bytes`
+  directly via a new `format_type_string` helper.
+- `Tools.json_of_eval_result` exposes the three `*_overflow` fields
+  with explicit nulls when absent. Eval tool description updated to
+  tell the agent it should `Read` an advertised path if it needs full
+  content.
+- Tests: `test_session` exercises both stdout spill (>8 KB phrase)
+  and value_repr spill (tight `max_bytes := 16`), asserts the inline
+  marker mentions `full at`, asserts the file exists and has the
+  expected prefix, asserts a small eval reports no overflow.
+  `test_mcp` asserts the new fields are present in the JSON-RPC
+  response, null for small evals, populated for a 20 KB
+  `print_string` phrase.
+- End-to-end smoke via raw JSON-RPC pipe confirmed: default mode
+  spills to `$HOME/.topup/spill/`, `TOPUP_SPILL_DIR=off` keeps the
+  inline marker but writes no file and reports `null` overflow.
+- Cleanup discipline: spill dir is wiped on `Session.create` (one per
+  process), not on `reset()`, so paths the agent saw earlier in the
+  conversation stay readable.
+- `CLAUDE.md` gained an "Oversized output" section documenting the
+  cap, the env var, the disable sentinel, and the four tuning refs.
+
 ## 2026-06-03 — Backlog grooming: socket transport bumped to priority 2
 
 Curatorial session, not work on the current task. Three changes to
