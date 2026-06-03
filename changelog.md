@@ -3,6 +3,33 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-03 — Backlog grooming: socket transport bumped to priority 2
+
+Curatorial session, not work on the current task. Three changes to
+the backlog, motivated by an exploration of how `lattice.t`-style
+dune cram tests could be derived from `topup`:
+
+- **Removed** "Consult Thibaut Mattio on ocaml-mcp interop" from
+  `backlog.md` and the matching "Pragmatic / consumer-side" bullet
+  from `DESIGN.md`. The `tmattio/ocaml-mcp` prior-art mentions in
+  DESIGN.md's related-projects section stay — they describe the
+  project, not an action item.
+- **Added** "Remote execution via SSH port forwarding" at the
+  bottom. Pattern from `tarides/sudo-proxy`: ship a static binary
+  to the remote, tunnel a Unix socket over SSH, route subsequent
+  MCP calls through it transparently. Cross-references the
+  existing "HTTP / daemon transport" item.
+- **Added** "Unix-socket transport for `topup-mcp`" as priority 2,
+  immediately after the current task. Minimum-viable form of the
+  deferred daemon transport: `--socket <path>` mode, same JSON-RPC,
+  no HTTP. Once the server binds a socket, the client side is
+  `ncat -U` + `jq` — no new `topup` binary needed. Dune cram is
+  the motivating use case: a `main.sh` runs all stanzas in one
+  shell, so a daemon started in stanza 1 is reachable from
+  stanzas 2..N (verified by reading `cram_exec.ml:create_sh_script`).
+
+Build and tests green; no source changes.
+
 ## 2026-06-03 — Bootstrap of the bootstrap
 
 Adopted the session-backlog discipline: a `backlog.md` of ordered

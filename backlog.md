@@ -17,6 +17,53 @@ escape hatches.
 
 DESIGN.md, "Must answer before phase-1 ships".
 
+## Unix-socket transport for `topup-mcp`
+
+Add a `--socket <path>` mode that binds a Unix socket and dispatches
+newline-delimited JSON-RPC against the same long-lived `Session.t`.
+No HTTP, no protocol changes — just rebind stdio to a socket and
+accept connections in a loop. Single-session semantics carry over
+unchanged; the dispatcher serialises requests across connections.
+
+Motivation is **debugging and reproducible test fixtures**, not
+multi-client serving. With the socket in place, the client side is
+generic Unix plumbing — no new topup binary needed:
+
+```sh
+  $ topup-mcp --socket "$TMPDIR/topup.sock" &
+  $ echo 'let x = 1+2;;' \
+  >   | jq -Rsc '{jsonrpc:"2.0",id:1,method:"tools/call",
+  >               params:{name:"eval",arguments:{source:.}}}' \
+  >   | ncat -U "$TMPDIR/topup.sock" \
+  >   | jq -r '.result.value_repr'
+  val x : int = 3
+```
+
+Each dune cram `$` stanza is a fresh process talking to the same
+long-running daemon over the socket; state persists across stanzas
+because the shell holding the daemon is one long-lived process (see
+`cram_exec.ml:create_sh_script` — every stanza runs in a single
+`main.sh`).
+
+Knock-on uses:
+
+- **Cram-based regression tests** for the eval pipeline driven from
+  `.t` files (the `lattice.t` shape, but stateful across stanzas).
+- **Transcript replay**: an agent's real MCP session, tee'd into a
+  cram-shaped `.t` file, becomes a deterministic regression
+  fixture. See the earlier discussion on `.t`-as-transcript.
+- **Live introspection** while a session is running — attach a
+  second client, run `env` / `lookup` without disrupting the agent.
+
+Smallest form of [[HTTP / daemon transport]]: same shape, no HTTP,
+no multi-client concurrency. Unblocks the [[Remote execution via
+SSH port forwarding]] item too — SSH forwards Unix sockets
+natively.
+
+DESIGN.md, phase-1 implementation choice "MCP transport" (currently
+"stdio only"); "Out of scope (initial)" — distributed sessions
+become reachable once a socket exists.
+
 ## Idle-detection contract for background fibres
 
 When does `eval` finish if the phrase spawns Lwt/Eio fibres? Default
@@ -37,15 +84,6 @@ memory thesis actually holds in practice. Scriptable from Claude Code
 via the `/caml` skill or directly via MCP.
 
 DESIGN.md, "Must answer before phase-1 ships".
-
-## Consult Thibaut Mattio on ocaml-mcp interop
-
-Before any phase-2 work, talk to Thibaut: is his stack a viable host
-for stateful eval, or is `topup` correctly a separate server consuming
-his libraries? Decision shapes whether `load`, `compile_to_binary`,
-and the Jupyter frontend live here or upstream.
-
-DESIGN.md, "Pragmatic / consumer-side".
 
 ## Assess first consumer's actual library needs
 
@@ -222,3 +260,35 @@ early rather than at user runtime.
 
 Prior art: Merlin opam versions list; ppxlib compatibility docs;
 ocamlformat-lib opam constraint; ocaml-jupyter's `jupyter.opam`.
+
+## Remote execution via SSH port forwarding
+
+For workloads where the data lives on a different machine than the
+agent (large mmapped corpora on bulk-storage hosts, NVMe-bound runs
+on a compute box), the toplevel should run on the remote and the
+MCP server stays local. Pattern from `tarides/sudo-proxy`: ship a
+static `topup` binary to the remote, then have the MCP server
+spawn `ssh -t -L <local.sock>:<remote.sock> HOST topup-server` and
+route subsequent `eval` / `env` / `lookup` / `reset` / `cancel`
+calls through the forwarded Unix socket transparently. The
+sudo-proxy `start_server({"host": …})` + per-request `host` field
+is the worked example: tunnel setup amortised across many calls,
+TUI/PTY allocated on the remote so stdout streams back unchanged.
+
+Composes with the deferred HTTP / daemon transport: SSH forwards
+Unix sockets natively, so any non-stdio shape unlocks remote mode
+for free. Open questions: per-host session keying (one tunnel per
+host vs. one per session), `forward_agent`-style opt-in for
+fetching private deps on the remote, how `reset` and `cancel`
+behave across a possibly-dead tunnel, where the persistent phrase
+log lives (local mirror vs. remote-only).
+
+DESIGN.md, "Out of scope (initial)" — "Distributed sessions
+(toplevel on a remote host, MCP server local). Possible later;
+first prove local value." Cross-references [[HTTP / daemon
+transport]] above.
+
+Prior art: `tarides/sudo-proxy` README, "Deploying to a remote
+host" and "Usage" sections; in particular the
+`ssh -t -L /tmp/sudo-proxy-HOST.sock:/run/user/$(ssh HOST id -u)/sudo-proxy.sock HOST sudo-proxy`
+recipe and the MCP `start_server` / `execute(host=…)` shape.

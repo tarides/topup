@@ -180,7 +180,6 @@ Open questions, partitioned by what blocks code-writing versus what blocks a use
 ### Pragmatic / consumer-side
 
 - **First consumer's actual needs.** If a phase-1 consumer requires loading a large library from turn 1 (mmapped datasets, C-stub-heavy bindings), `load` and pre-warming become more load-bearing than the minimal-v1 cut admits.
-- **Conversation with Thibaut Mattio.** Before phase-1: is his MCP stack compatible with topup's needs? Would he merge stateful-eval into `ocaml-mcp`, or is a separate server consuming his libraries the right path?
 
 ### Can defer (phase-2 or later)
 
