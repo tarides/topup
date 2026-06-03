@@ -21,9 +21,17 @@ type t = {
 
 let initialized = ref false
 
+let init_findlib () =
+  try
+    Findlib.init ();
+    Topfind.add_predicates [ "byte"; "toploop" ];
+    Topfind.log := ignore
+  with _ -> ()
+
 let create () =
   if not !initialized then begin
     Toploop.initialize_toplevel_env ();
+    init_findlib ();
     Sys.catch_break true;
     initialized := true
   end;

@@ -1,4 +1,4 @@
 (library
  (name topup)
  (modes byte)
- (libraries compiler-libs.toplevel unix threads.posix))
+ (libraries compiler-libs.toplevel findlib.top unix threads.posix))
