@@ -168,3 +168,57 @@ servers, multi-client access, remote toplevels. Defer until a concrete
 need lands.
 
 DESIGN.md, phase-1 implementation choice "MCP transport".
+
+## Versioning strategy for compiler-libs instability
+
+`compiler-libs` has no backwards-compatibility guarantee — every
+project that wraps it has taken a position. Four precedents:
+
+- **Merlin** — per-OCaml-version branches and a version suffix
+  `M.m[.p]-NNN` (`4.17.1-501` is Merlin 4.17.1 for OCaml 5.01,
+  `5.7.1-504` is for OCaml 5.04). `main` tracks the latest. Closest
+  analogue to topup: heavy compiler-libs consumer bound to the host
+  typechecker.
+- **ppxlib** — shadows compiler-libs behind a frozen AST with
+  bidirectional migration; PPX authors only see ppxlib's parsetree.
+  Heavy hub-and-spoke infrastructure that pays off across many
+  downstream consumers. Overkill for a single-binary tool.
+- **ocamlformat** — vendors *multiple* parsetree snapshots
+  (`Ocaml_413_extended`, `Parser_extended`, …) and lets one binary
+  format source for different OCaml language versions via the
+  `ocaml-version` config. Broad opam floor, no tight upper bound
+  (`ocamlformat-lib` 0.29.0 declares only `ocaml >= 4.14`). Works
+  because it's a *static-text* tool: parse source, print source —
+  no runtime coupling. Also split into binary + library
+  (`ocamlformat` + `ocamlformat-lib`) so embedded users can consume
+  the lib directly.
+- **utop / ocaml-jupyter** — tight opam interval
+  (`ocaml { >= "X" & < "Y" }`) per release, lean on `opam switch`
+  to isolate. Small surface; one line per supported major.
+
+ocamlformat's vendor-snapshots trick is **not directly applicable**
+to topup. topup touches execution APIs (`Toploop.execute_phrase`,
+`Outcometree`, dynamic environment, capture) that are bound to the
+host runtime's compiler-libs — there is no "vendor an older
+Toploop". That puts topup squarely in Merlin's neighbourhood. The
+one ocamlformat lesson that does transfer is the binary/library
+split, which topup already has via dune.
+
+For topup at v0.1.0, do the utop/jupyter shape now: tighten the opam
+upper bound to a closed interval against the current floor (today
+that means `ocaml { >= "5.1" & < "5.4" }` or whichever upper bound
+matches reality). Keep one version line. Defer Merlin's `M.m-NNN`
+suffix scheme until OCaml N+1 actually breaks the build — adopting
+it pre-emptively is overhead before there is evidence of breakage.
+At that point, fork: maintain the old line for legacy switches,
+start a new line for the new compiler, adopt the suffix to
+disambiguate.
+
+Worth doing immediately regardless: add a canary in the test suite
+that exercises the compiler-libs surface topup actually depends on
+(`Toploop.execute_phrase`, the `Outcometree.out_phrase` shape,
+`Location.error_of_exn`) so the next compiler bump fails loud and
+early rather than at user runtime.
+
+Prior art: Merlin opam versions list; ppxlib compatibility docs;
+ocamlformat-lib opam constraint; ocaml-jupyter's `jupyter.opam`.
