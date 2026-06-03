@@ -101,6 +101,13 @@ let eval ?timeout t source =
         (try
            let _ : bool = Toploop.execute_phrase true sink phrase in
            match !last_outcome with
+           | Some (Ophr_exception (Sys.Break, _)) ->
+               let reason =
+                 if Atomic.get timeout_fired then "timed out"
+                 else "cancelled"
+               in
+               error := cancelled_error reason;
+               raise Stop
            | Some (Ophr_exception (exn, _)) ->
                error := Some (Error.of_runtime_exn exn);
                raise Stop

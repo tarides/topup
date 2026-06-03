@@ -78,8 +78,8 @@ let () =
   let r_to = Session.eval ~timeout:0.2 s "let rec f () = f () in f ();;" in
   let elapsed = Unix.gettimeofday () -. t0 in
   (match r_to.error with
-   | Some { phase = Runtime; message; _ }
-     when String.length message > 0 && elapsed < 1.0 -> ()
+   | Some { phase = Runtime; message = "evaluation timed out"; _ }
+     when elapsed < 1.0 -> ()
    | _ ->
        Printf.printf "FAIL timeout: elapsed=%.3f err=%s\n" elapsed
          (match r_to.error with
