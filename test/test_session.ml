@@ -125,4 +125,46 @@ let () =
    | None ->
        print_endline "FAIL tight cap: no value_repr";
        exit 1);
+  let log_path =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-log-%d.ml" (Unix.getpid ()))
+  in
+  (try Sys.remove log_path with _ -> ());
+  let s_logged = Session.create ~log_path () in
+  let _ = Session.eval s_logged "let logged_one = 11;;" in
+  let _ = Session.eval s_logged "let logged_two = logged_one * 4;;" in
+  let _ = Session.eval s_logged "let _bad = 1 + true;;" in
+  let logged =
+    let ic = open_in log_path in
+    let n = in_channel_length ic in
+    let buf = Bytes.create n in
+    really_input ic buf 0 n;
+    close_in ic;
+    Bytes.unsafe_to_string buf
+  in
+  let contains_sub hay needle =
+    let n = String.length hay and k = String.length needle in
+    let rec loop i =
+      if i + k > n then false
+      else if String.sub hay i k = needle then true
+      else loop (i + 1)
+    in
+    k > 0 && loop 0
+  in
+  if not (contains_sub logged "logged_one") then begin
+    Printf.printf "FAIL log missing entries; got: %S\n" logged;
+    exit 1
+  end;
+  if contains_sub logged "_bad" then begin
+    print_endline "FAIL log included a phrase that errored";
+    exit 1
+  end;
+  Session.reset s_logged;
+  let _ = Session.eval s_logged (Printf.sprintf "#use %S;;" log_path) in
+  (match Session.lookup s_logged "logged_two" with
+   | Some { ty = "int"; _ } -> ()
+   | _ ->
+       print_endline "FAIL replay via #use did not restore logged_two";
+       exit 1);
+  (try Sys.remove log_path with _ -> ());
   print_endline "test_session: ok"

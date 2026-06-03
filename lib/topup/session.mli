@@ -16,7 +16,11 @@ type eval_result = {
   error : Error.t option;
 }
 
-val create : unit -> t
+(** Create a fresh session. If [~log_path] is given, every phrase that
+    evaluates without error is appended to that file as raw OCaml, so the
+    session can be replayed later by `#use`-ing the file in a new session.
+    The file (and any missing parent directory) is created on demand. *)
+val create : ?log_path:string -> unit -> t
 
 (** Evaluate one or more OCaml phrases. If [timeout] is given, evaluation is
     interrupted after that many seconds and a cancellation error is returned. *)

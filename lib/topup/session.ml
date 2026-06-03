@@ -17,6 +17,7 @@ type eval_result = {
 type t = {
   mutable history : string list;
   main_pid : int;
+  log_path : string option;
 }
 
 let initialized = ref false
@@ -28,7 +29,30 @@ let init_findlib () =
     Topfind.log := ignore
   with _ -> ()
 
-let create () =
+let ensure_parent_dir path =
+  let dir = Filename.dirname path in
+  if dir = "" || dir = "." || dir = "/" then ()
+  else
+    try Unix.mkdir dir 0o700 with
+    | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    | _ -> ()
+
+let log_phrase t source =
+  match t.log_path with
+  | None -> ()
+  | Some path -> (
+      try
+        ensure_parent_dir path;
+        let oc =
+          open_out_gen [ Open_append; Open_creat; Open_text ] 0o600 path
+        in
+        output_string oc source;
+        let n = String.length source in
+        if n = 0 || source.[n - 1] <> '\n' then output_char oc '\n';
+        close_out oc
+      with _ -> ())
+
+let create ?log_path () =
   if not !initialized then begin
     Toploop.initialize_toplevel_env ();
     Pretty.configure_toploop ();
@@ -36,7 +60,7 @@ let create () =
     Sys.catch_break true;
     initialized := true
   end;
-  { history = []; main_pid = Unix.getpid () }
+  { history = []; main_pid = Unix.getpid (); log_path }
 
 let format_to_string printer x =
   let buf = Buffer.create 64 in
@@ -144,6 +168,7 @@ let eval ?timeout t source =
   Option.iter Thread.join wd;
   Toploop.print_out_phrase := prev_print;
   t.history <- source :: t.history;
+  if !error = None then log_phrase t source;
   {
     value_repr = !value_repr;
     ty = !ty;
