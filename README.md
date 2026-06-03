@@ -49,23 +49,23 @@ This is the part of the design that justifies `topup` versus just-use-utop.
 A typical LLM coding loop:
 
 ```
-turn N:   model evaluates `let big_txs = ... (* expensive *)`
-turn N+1: model wants to refer to `big_txs`
+turn N:   model evaluates `let parsed_corpus = ... (* expensive *)`
+turn N+1: model wants to refer to `parsed_corpus`
           → must either re-derive it (slow, wasteful) or
             paste its serialized form into context (token-expensive)
 ```
 
-With `topup`, turn N+1 just references `big_txs` by name. The toplevel holds the value; the model holds the *name and type*. Cost: one symbol in the context, instead of N kilobytes of data. The OCaml type system makes this recall *sound* — the model can't accidentally use `big_txs` somewhere a `block list` is expected; the compiler will catch it before evaluation.
+With `topup`, turn N+1 just references `parsed_corpus` by name. The toplevel holds the value; the model holds the *name and type*. Cost: one symbol in the context, instead of N kilobytes of data. The OCaml type system makes this recall *sound* — the model can't accidentally use `parsed_corpus` somewhere a `document list` is expected; the compiler will catch it before evaluation.
 
 This inverts the usual pattern (model carries state in context, tool is stateless). Here the tool carries state, the model carries only names + types + intent. Analogous to Claude Code's memory files but typed, programmatic, and live.
 
 **The general pattern isn't novel.** Posit's [`mcp-repl`](https://github.com/posit-dev/mcp-repl) (R + Python) ships a stateful REPL-as-MCP with explicitly the same pitch — "a shell tool keeps forcing the agent to rebuild context; mcp-repl keeps the session open instead." The persistence-beats-stateless argument is in the air. What's specific to `topup` is the combination that the dynamic-language variants can't offer: typed recall (the type system makes name reuse *sound*), native-speed evaluation, and a promotion path to a standalone binary. See "Relation to existing tools" below.
 
-**Honest caveat.** A type signature for a record with 47 fields tells the model the *type*, not what's *in* `big_txs`. In practice the model will call `lookup` often, partially refilling context with previews. The thesis trades "values inlined in context" for "many cheap typed lookups," not for free recall. That's still a big win — `lookup` returns *exactly* what the model asks for, on demand — but it's not magic.
+**Honest caveat.** A type signature for a record with 47 fields tells the model the *type*, not what's *in* `parsed_corpus`. In practice the model will call `lookup` often, partially refilling context with previews. The thesis trades "values inlined in context" for "many cheap typed lookups," not for free recall. That's still a big win — `lookup` returns *exactly* what the model asks for, on demand — but it's not magic.
 
 ## Native-speed evaluation
 
-Stock `ocaml` is bytecode. For most interactive work that's fine, but for LLM-driven workloads that may walk large datasets (e.g. blockchain analyses, parsing big logs), bytecode evaluation is too slow.
+Stock `ocaml` is bytecode. For most interactive work that's fine, but for LLM-driven workloads that walk large datasets — search indices, parsed corpora, structured-log analysis — bytecode evaluation is too slow.
 
 Two viable strategies:
 
@@ -97,7 +97,7 @@ The realistic mechanism is **replay of the phrase history**, optionally combined
 
 ## Session pooling and routing
 
-A fresh toplevel is cheap. A toplevel with `Dynlink`-loaded libraries that mmap large datasets (e.g. libblocksci + tx_data.dat) is expensive — seconds to minutes of cold-cache I/O. Re-paying that cost on every `reset()` defeats the externalized-memory thesis.
+A fresh toplevel is cheap. A toplevel with `Dynlink`-loaded libraries that mmap large datasets (a search index, a parsed corpus, a precomputed graph) is expensive — seconds to minutes of cold-cache I/O. Re-paying that cost on every `reset()` defeats the externalized-memory thesis.
 
 `topup` should support **named, persistent sessions** with optional pre-warming on startup, plus a small pool of hot replicas for parallel exploration. Replay-based checkpoints (above) make branching cheap once a pool exists.
 
@@ -144,10 +144,6 @@ The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific nich
 - Distributed sessions (toplevel on a remote host, MCP server local). Possible later; first prove local value.
 - Non-OCaml backends. Name is `topup`, scope is OCaml. A future `topup-py`, `topup-rs` could share protocol but not implementation.
 
-## Consumers
-
-The first concrete consumer is BlockSci's Tier-2 interactive query UX — see `~/Projects/BlockSci/PLAN_MOBILE_CODE.md`. BlockSci is *not* the only intended consumer; Lonnrot, blocksci-datalog, and any LLM-OCaml workflow are candidates. Keeping `topup` BlockSci-agnostic is a deliberate design choice.
-
 ## Decided
 
 ### Design
@@ -183,7 +179,7 @@ Open questions, partitioned by what blocks code-writing versus what blocks a use
 
 ### Pragmatic / consumer-side
 
-- **What does BlockSci's Tier-2 query UX actually need?** Per `~/Projects/BlockSci/PLAN_MOBILE_CODE.md`. If libblocksci is required from turn 1, `load` and pre-warming become more load-bearing than the minimal-v1 cut admits.
+- **First consumer's actual needs.** If a phase-1 consumer requires loading a large library from turn 1 (mmapped datasets, C-stub-heavy bindings), `load` and pre-warming become more load-bearing than the minimal-v1 cut admits.
 - **Conversation with Thibaut Mattio.** Before phase-1: is his MCP stack compatible with topup's needs? Would he merge stateful-eval into `ocaml-mcp`, or is a separate server consuming his libraries the right path?
 
 ### Can defer (phase-2 or later)
