@@ -102,4 +102,27 @@ let () =
           | Some e -> e.message
           | None -> "<no error>");
        exit 1);
+  let r_long = Session.eval s "List.init 10000 (fun i -> i);;" in
+  (match r_long.value_repr with
+   | Some s when String.length s <= !Topup.Pretty.max_bytes + 64 -> ()
+   | Some s ->
+       Printf.printf "FAIL oversized value_repr: %d bytes\n" (String.length s);
+       exit 1
+   | None ->
+       print_endline "FAIL oversized: no value_repr";
+       exit 1);
+  let saved = !Topup.Pretty.max_bytes in
+  Topup.Pretty.max_bytes := 16;
+  let r_tiny =
+    Session.eval s "\"123456789012345678901234567890\";;"
+  in
+  Topup.Pretty.max_bytes := saved;
+  (match r_tiny.value_repr with
+   | Some s when String.length s <= 16 + 32 && String.length s > 16 -> ()
+   | Some s ->
+       Printf.printf "FAIL tight cap: got %d bytes: %s\n" (String.length s) s;
+       exit 1
+   | None ->
+       print_endline "FAIL tight cap: no value_repr";
+       exit 1);
   print_endline "test_session: ok"

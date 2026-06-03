@@ -1,7 +1,14 @@
-let max_depth = 5
-let max_length = 100
-let max_bytes = 8192
+let max_depth = ref 10
+let max_steps = ref 200
+let max_bytes = ref 8192
 
-let truncate_string s =
-  if String.length s <= max_bytes then s
-  else String.sub s 0 max_bytes ^ "…[truncated]"
+let configure_toploop () =
+  Toploop.max_printer_depth := !max_depth;
+  Toploop.max_printer_steps := !max_steps
+
+let truncate_bytes ?(limit = !max_bytes) s =
+  let len = String.length s in
+  if len <= limit then s
+  else
+    let dropped = len - limit in
+    String.sub s 0 limit ^ Printf.sprintf "…[+%d bytes]" dropped

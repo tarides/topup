@@ -31,6 +31,7 @@ let init_findlib () =
 let create () =
   if not !initialized then begin
     Toploop.initialize_toplevel_env ();
+    Pretty.configure_toploop ();
     init_findlib ();
     Sys.catch_break true;
     initialized := true
@@ -42,7 +43,7 @@ let format_to_string printer x =
   let ppf = Format.formatter_of_buffer buf in
   printer ppf x;
   Format.pp_print_flush ppf ();
-  Buffer.contents buf
+  Pretty.truncate_bytes (Buffer.contents buf)
 
 let print_value ppf v = !Oprint.out_value ppf v
 let print_type = Format_doc.compat !Oprint.out_type
@@ -157,7 +158,7 @@ let format_type_expr (ty : Types.type_expr) =
   let ppf = Format.formatter_of_buffer buf in
   Printtyp.type_scheme ppf ty;
   Format.pp_print_flush ppf ();
-  Buffer.contents buf
+  Pretty.truncate_bytes (Buffer.contents buf)
 
 let env ?filter ?(all = false) _t : binding list =
   let env = !Toploop.toplevel_env in
