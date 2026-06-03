@@ -25,18 +25,18 @@ OCaml already has the runtime that solves both. Stock `ocaml`, `utop`, and the `
 
 ## What the LLM gets
 
-A small set of tools, sufficient to use a long-lived toplevel as the model's working environment:
+A small set of tools, sufficient to use a long-lived toplevel as the model's working environment. The **Phase** column marks the v1 cut:
 
-| Tool | Effect |
-|------|--------|
-| `eval(source)` | Evaluate one or more OCaml phrases. Returns `{value_repr, type, stdout, warnings, error}`. Errors are structured: `{phase: typecheck \| runtime, location, message, related}`. |
-| `env(filter?)` | List current bindings as `[(name, type)]`. Filters by recency, type prefix, or namespace — unfiltered output doesn't scale past a few dozen bindings. The model's RAG-over-self primitive. |
-| `lookup(name)` | Inspect one binding: type, brief value preview, source location if available. |
-| `load(path)` | `Dynlink` a `.cmxs` plugin (libraries the model wants in scope). |
-| `cancel()` | Interrupt the currently-running phrase. Also exposed as an input-prefix byte (cf. mcp-repl's ``), so the model can interrupt without a separate tool round-trip. Wall-clock caps catch the model that forgets; this catches the one that doesn't. |
-| `reset()` | Discard the current session and start fresh. Escalates graceful → forceful → descendant-process scan (mcp-repl's approach; necessary when a Dynlinked C stub leaves zombie threads). |
-| `checkpoint(label)` / `restore(label)` | Save and restore a named session state via **phrase replay**, not value Marshal. See "Snapshots" below for why. |
-| `compile_to_binary(entry, out)` | Promote a validated query: serialize phrases reachable from `entry` + freeze the binding environment into a standalone `.ml` file, build with `dune`, emit a native ELF for production runs. |
+| Tool | Phase | Effect |
+|------|-------|--------|
+| `eval(source)` | 1 | Evaluate one or more OCaml phrases. Returns `{value_repr, type, stdout, warnings, error}`. Errors are structured: `{phase: typecheck \| runtime, location, message, related}`. |
+| `env(filter?)` | 1 | List current bindings as `[(name, type)]`. Filters by recency, type prefix, or namespace — unfiltered output doesn't scale past a few dozen bindings. The model's RAG-over-self primitive. |
+| `lookup(name)` | 1 | Inspect one binding: type, brief value preview, source location if available. |
+| `cancel()` | 1 | Interrupt the currently-running phrase. Also exposed as an input-prefix byte (cf. mcp-repl's ``), so the model can interrupt without a separate tool round-trip. Wall-clock caps catch the model that forgets; this catches the one that doesn't. |
+| `reset()` | 1 | Discard the current session and start fresh. Escalates graceful → forceful → descendant-process scan (mcp-repl's approach; necessary when a Dynlinked C stub leaves zombie threads). |
+| `load(path)` | 2 | `Dynlink` a `.cmxs` plugin (libraries the model wants in scope). |
+| `checkpoint(label)` / `restore(label)` | 2 | Save and restore a named session state via **phrase replay**, not value Marshal. See "Snapshots" below for why. |
+| `compile_to_binary(entry, out)` | 2 | Promote a validated query: serialize phrases reachable from `entry` + freeze the binding environment into a standalone `.ml` file, build with `dune`, emit a native ELF for production runs. |
 
 The Phase-2 promotion via `compile_to_binary` is what keeps `topup` honest. The toplevel is for *exploration and refinement*; once a query is stable, it leaves the toplevel and runs as a normal native binary — same source, no toplevel dependency at runtime.
 
@@ -118,7 +118,7 @@ MCP's request/response shape is awkward for long-running phrases and streamed st
 ### OCaml runtimes and toplevels
 
 - **`ocaml`** (stock toplevel) — the runtime `topup` wraps. `Toploop.execute_phrase` is the core primitive.
-- **`utop`** (Jérémie Dimino) — library-shaped, embeddable (`UTop_main.interact`), handles partial-input/multi-line phrase boundaries. Better starting point than stock `ocaml`.
+- **`utop`** (Jérémie Dimino) — library-shaped, embeddable (`UTop_main.interact`), handles partial-input/multi-line phrase boundaries. Considered as a parser dependency, then rejected: LLMs send complete `eval` strings so the as-you-type completeness logic is wasted, and utop drags in Lwt + lambda-term + zed for code we wouldn't use. `topup` calls `compiler-libs` directly.
 - **[`Down`](https://erratique.ch/software/down)** (Daniel Bünzli) — line editing, history, completion *for humans*. Inspiration for the name; orthogonal in function.
 - **[`ocaml-jupyter`](https://github.com/akabe/ocaml-jupyter)** — Jupyter kernel wrapping the toplevel. Closest *protocol* analogue. The wedge over "fork ocaml-jupyter and add an MCP shim" is threefold: (a) checkpoint/restore via phrase replay for branching exploration, (b) `compile_to_binary` promotion, (c) native-JIT default (Jupyter is bytecode). Without those, the right move would in fact be to fork ocaml-jupyter.
 - **[`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin)** (Jane Street, archived) — automated compile-and-Dynlink of `.ml` sources. The JIT strategy for native-speed evaluation builds on this lineage.
@@ -150,9 +150,20 @@ The first concrete consumer is BlockSci's Tier-2 interactive query UX — see `~
 
 ## Decided
 
-- **Phrase boundary detection:** adopt utop's parser. The ad-hoc alternative reinvents a solved problem.
+### Design
+
 - **Error format:** structured `{phase: typecheck | runtime, location, message, related}`. LLMs parse JSON better than human-format compiler diagnostics.
 - **Recovery / checkpoint mechanism:** phrase replay from a checkpoint log, not Marshal of values (issue #5215).
+- **Phrase parsing:** call `compiler-libs` directly — `Parse.toplevel_phrase` in a loop with syntax-error recovery. utop is rejected because its as-you-type completeness logic is wasted on LLM-supplied complete strings, and Down is orthogonal (both are human-keyboard enhancers). Compiler-libs cross-version porting is the known cost.
+
+### Phase-1 implementation choices
+
+- **Scope:** `eval` / `env` / `lookup` / `reset` / `cancel`. Single session. Defer `load`, `checkpoint`/`restore`, `compile_to_binary`, pooling.
+- **Code structure:** core library (`topup-core`, the `Session` API) + thin protocol shim (`topup-mcp`) as separate dune libraries from day 1. Future Jupyter / CLI frontends slot in beside `topup-mcp`.
+- **MCP transport:** stdio only. One topup process per client; pre-warming happens during server startup before accepting tool calls. HTTP / daemon mode deferred.
+- **MCP framework:** roll our own minimal layer — `initialize` + `tools/list` + `tools/call` + `notifications/cancelled` over stdio, ~500-800 LOC. Revisit when HTTP or richer features (resources, prompts) arrive.
+- **OCaml floor:** 5.1+. Modern dune, modern compiler-libs, effect handlers available for user code.
+- **Driver model:** bytecode driver + native `.cmxs` plugins (the `ocaml_plugin` shape). Driver runs as bytecode for mature `Toploop` reflection and easier `Dynlink` lifecycle; user phrases compile to native `.cmxs` for native-speed evaluation.
 
 ## Phase-1 planning
 
@@ -160,15 +171,7 @@ Open questions, partitioned by what blocks code-writing versus what blocks a use
 
 ### Must answer before writing code
 
-These shape project structure; cheap to decide now, expensive to revisit.
-
-- **Phase-1 scope cut.** What's in v1 vs. deferred? Minimal target: single session, `eval`/`env`/`lookup`/`reset`/`cancel`. Defer `checkpoint`, `load`, `compile_to_binary`, pooling.
-- **Library/binary split.** Core library + thin protocol shim from day 1, or monolith first? The library shape determines whether the MCP layer is 200 lines or 2000.
-- **MCP framework choice.** Depend on tmattio's `mcp`/`mcp-eio`/`mcp-sdk` (early but exist, OCaml-native), roll our own, or bridge via a non-OCaml MCP library. The first consolidates the ecosystem; worth a conversation with Thibaut before committing.
-- **utop integration depth.** Depend on `utop` as a library, vendor `UTop.parse_input` and friends, or write phrase-boundary detection ad hoc. utop is heavyweight for a server that wants neither lwt nor a terminal.
-- **OCaml version floor.** 4.14, 5.0, 5.1+? Affects effect-handler support in user code, driver concurrency choice, and `Toploop` interaction.
-- **Driver: bytecode or native.** Bytecode driver + native plugin loading is the `ocaml_plugin` shape and likely right for v1. Fully native is harder; fully bytecode defeats the latency thesis.
-- **Stdout/stderr capture mechanism.** `Toploop` hooks vs. fd-level dup-and-pipe. Only the fd approach catches C-stub output and post-`eval` Lwt-fiber writes.
+- **Stdout/stderr capture mechanism.** `Toploop` hooks vs. fd-level dup-and-pipe. Only the fd approach catches C-stub output and post-`eval` Lwt-fiber writes; the hooks approach is simpler but loses output the LLM may need. Lean toward fd-level.
 
 ### Must answer before phase-1 ships
 
