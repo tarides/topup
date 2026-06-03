@@ -161,6 +161,18 @@ let () =
   end;
   Session.reset s_logged;
   let _ = Session.eval s_logged (Printf.sprintf "#use %S;;" log_path) in
+  let logged_after_replay =
+    let ic = open_in log_path in
+    let n = in_channel_length ic in
+    let buf = Bytes.create n in
+    really_input ic buf 0 n;
+    close_in ic;
+    Bytes.unsafe_to_string buf
+  in
+  if contains_sub logged_after_replay "#use" then begin
+    print_endline "FAIL log captured a #use directive (would cause replay recursion)";
+    exit 1
+  end;
   (match Session.lookup s_logged "logged_two" with
    | Some { ty = "int"; _ } -> ()
    | _ ->

@@ -37,20 +37,33 @@ let ensure_parent_dir path =
     | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
     | _ -> ()
 
+let starts_with_directive s =
+  let n = String.length s in
+  let rec skip_ws i =
+    if i >= n then None
+    else
+      match s.[i] with
+      | ' ' | '\t' | '\n' | '\r' -> skip_ws (i + 1)
+      | c -> Some c
+  in
+  skip_ws 0 = Some '#'
+
 let log_phrase t source =
-  match t.log_path with
-  | None -> ()
-  | Some path -> (
-      try
-        ensure_parent_dir path;
-        let oc =
-          open_out_gen [ Open_append; Open_creat; Open_text ] 0o600 path
-        in
-        output_string oc source;
-        let n = String.length source in
-        if n = 0 || source.[n - 1] <> '\n' then output_char oc '\n';
-        close_out oc
-      with _ -> ())
+  if starts_with_directive source then ()
+  else
+    match t.log_path with
+    | None -> ()
+    | Some path -> (
+        try
+          ensure_parent_dir path;
+          let oc =
+            open_out_gen [ Open_append; Open_creat; Open_text ] 0o600 path
+          in
+          output_string oc source;
+          let n = String.length source in
+          if n = 0 || source.[n - 1] <> '\n' then output_char oc '\n';
+          close_out oc
+        with _ -> ())
 
 let create ?log_path () =
   if not !initialized then begin
