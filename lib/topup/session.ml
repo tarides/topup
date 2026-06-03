@@ -185,7 +185,11 @@ let format_type_expr (ty : Types.type_expr) =
   Format.pp_print_flush ppf ();
   Pretty.truncate_bytes (Buffer.contents buf)
 
-let env ?filter ?(all = false) _t : binding list =
+let is_user_origin t (file : string) =
+  file = "<eval>"
+  || match t.log_path with Some p -> file = p | None -> false
+
+let env ?filter ?(all = false) t : binding list =
   let env = !Toploop.toplevel_env in
   let bindings =
     Env.fold_values
@@ -204,7 +208,9 @@ let env ?filter ?(all = false) _t : binding list =
     else
       List.filter
         (fun b ->
-          match b.location with Some l -> l.file = "<eval>" | None -> false)
+          match b.location with
+          | Some l -> is_user_origin t l.file
+          | None -> false)
         bindings
   in
   match filter with

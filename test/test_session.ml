@@ -166,5 +166,14 @@ let () =
    | _ ->
        print_endline "FAIL replay via #use did not restore logged_two";
        exit 1);
+  let replayed = Session.env s_logged in
+  if not
+       (List.exists
+          (fun (b : Session.binding) -> b.name = "logged_two")
+          replayed)
+  then begin
+    print_endline "FAIL replayed binding not visible under default env";
+    exit 1
+  end;
   (try Sys.remove log_path with _ -> ());
   print_endline "test_session: ok"
