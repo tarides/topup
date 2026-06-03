@@ -1,0 +1,4 @@
+(tests
+ (names test_session test_mcp)
+ (modes byte)
+ (libraries topup mcp unix threads.posix))
