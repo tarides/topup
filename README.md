@@ -33,8 +33,8 @@ A small set of tools, sufficient to use a long-lived toplevel as the model's wor
 | `env(filter?)` | List current bindings as `[(name, type)]`. Filters by recency, type prefix, or namespace — unfiltered output doesn't scale past a few dozen bindings. The model's RAG-over-self primitive. |
 | `lookup(name)` | Inspect one binding: type, brief value preview, source location if available. |
 | `load(path)` | `Dynlink` a `.cmxs` plugin (libraries the model wants in scope). |
-| `cancel()` | Interrupt the currently-running phrase. Wall-clock caps catch the model that forgets; this catches the one that doesn't. |
-| `reset()` | Discard the current session and start fresh. |
+| `cancel()` | Interrupt the currently-running phrase. Also exposed as an input-prefix byte (cf. mcp-repl's ``), so the model can interrupt without a separate tool round-trip. Wall-clock caps catch the model that forgets; this catches the one that doesn't. |
+| `reset()` | Discard the current session and start fresh. Escalates graceful → forceful → descendant-process scan (mcp-repl's approach; necessary when a Dynlinked C stub leaves zombie threads). |
 | `checkpoint(label)` / `restore(label)` | Save and restore a named session state via **phrase replay**, not value Marshal. See "Snapshots" below for why. |
 | `compile_to_binary(entry, out)` | Promote a validated query: serialize phrases reachable from `entry` + freeze the binding environment into a standalone `.ml` file, build with `dune`, emit a native ELF for production runs. |
 
@@ -58,6 +58,8 @@ turn N+1: model wants to refer to `big_txs`
 With `topup`, turn N+1 just references `big_txs` by name. The toplevel holds the value; the model holds the *name and type*. Cost: one symbol in the context, instead of N kilobytes of data. The OCaml type system makes this recall *sound* — the model can't accidentally use `big_txs` somewhere a `block list` is expected; the compiler will catch it before evaluation.
 
 This inverts the usual pattern (model carries state in context, tool is stateless). Here the tool carries state, the model carries only names + types + intent. Analogous to Claude Code's memory files but typed, programmatic, and live.
+
+**The general pattern isn't novel.** Posit's [`mcp-repl`](https://github.com/posit-dev/mcp-repl) (R + Python) ships a stateful REPL-as-MCP with explicitly the same pitch — "a shell tool keeps forcing the agent to rebuild context; mcp-repl keeps the session open instead." The persistence-beats-stateless argument is in the air. What's specific to `topup` is the combination that the dynamic-language variants can't offer: typed recall (the type system makes name reuse *sound*), native-speed evaluation, and a promotion path to a standalone binary. See "Relation to existing tools" below.
 
 **Honest caveat.** A type signature for a record with 47 fields tells the model the *type*, not what's *in* `big_txs`. In practice the model will call `lookup` often, partially refilling context with previews. The thesis trades "values inlined in context" for "many cheap typed lookups," not for free recall. That's still a big win — `lookup` returns *exactly* what the model asks for, on demand — but it's not magic.
 
@@ -113,11 +115,28 @@ MCP's request/response shape is awkward for long-running phrases and streamed st
 
 ## Relation to existing tools
 
+### OCaml runtimes and toplevels
+
 - **`ocaml`** (stock toplevel) — the runtime `topup` wraps. `Toploop.execute_phrase` is the core primitive.
 - **`utop`** (Jérémie Dimino) — library-shaped, embeddable (`UTop_main.interact`), handles partial-input/multi-line phrase boundaries. Better starting point than stock `ocaml`.
 - **[`Down`](https://erratique.ch/software/down)** (Daniel Bünzli) — line editing, history, completion *for humans*. Inspiration for the name; orthogonal in function.
-- **[`ocaml-jupyter`](https://github.com/akabe/ocaml-jupyter)** — Jupyter kernel wrapping the toplevel. Closest existing analogue. The wedge over "fork ocaml-jupyter and add an MCP shim" is threefold: (a) checkpoint/restore via phrase replay for branching exploration, (b) `compile_to_binary` promotion, (c) native-JIT default (Jupyter is bytecode). Without those, the right move would in fact be to fork ocaml-jupyter.
+- **[`ocaml-jupyter`](https://github.com/akabe/ocaml-jupyter)** — Jupyter kernel wrapping the toplevel. Closest *protocol* analogue. The wedge over "fork ocaml-jupyter and add an MCP shim" is threefold: (a) checkpoint/restore via phrase replay for branching exploration, (b) `compile_to_binary` promotion, (c) native-JIT default (Jupyter is bytecode). Without those, the right move would in fact be to fork ocaml-jupyter.
 - **[`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin)** (Jane Street, archived) — automated compile-and-Dynlink of `.ml` sources. The JIT strategy for native-speed evaluation builds on this lineage.
+
+### Existing MCP servers in the OCaml ecosystem
+
+- **[`tmattio/ocaml-mcp`](https://github.com/tmattio/ocaml-mcp)** (Thibaut Mattio) — active, ~12 tools across dune, OCaml, and filesystem groups. Its `ocaml/eval` tool **is not a REPL**: each call spawns a fresh `ocaml -noprompt` subprocess, prepends `dune top` directives, pipes the source on stdin, and kills the subprocess. The project's own cram test demonstrates that `let x = 42` in one call leaves `x` unbound in the next. Bytecode, 5-second timeout, no env, no sessions, no sandbox. The philosophy is "deep integration with the language/tooling" — signatures, project structure, type-at-pos — with eval as a one-shot helper, not a working environment. **Complementary to `topup`, not competing**; the OCaml-side gap for a stateful REPL-as-MCP is real.
+- **[`jonludlam/odoc-llm`](https://github.com/jonludlam/odoc-llm)** (Jon Ludlam, OxCaml Labs) — Python MCP server exposing package/module *semantic search* via LLM embeddings over odoc-generated markdown, plus type-search via sherlodoc. No eval, no sessions. Orthogonal to `topup`: it answers "which package should I use?", `topup` answers "evaluate this in the live environment."
+- **Anil Madhavapeddy (`avsm`) — own MCP server retired.** Stated on the OCaml Discuss thread: "I hacked up an OCaml MCP implementation a few months ago … but I can retire that in favour of [tmattio's]." His current investment is Claude Code [skills/slash-commands](https://github.com/avsm/ocaml-claude-marketplace), not an MCP-exposed REPL.
+
+### Stateful REPL-as-MCP in other languages
+
+- **[`posit-dev/mcp-repl`](https://github.com/posit-dev/mcp-repl)** (Rust; R + Python) — the closest existing thing *in spirit*. Same headline pitch: keep the session open instead of forcing the agent to rebuild context. Two tools (`repl`, `repl_reset`); embedded-interpreter worker (knows precisely when idle, no stdout-heuristic polling); per-client sandbox policy via OS primitives (workspace-write + no network + memory guardrail); interrupt and reset via prefix bytes (``, ``); inline image content for plots; oversized-output handling via either pager or structured file bundle; reset escalation graceful → forceful → descendant-process scan. ~100 commits, prebuilt binaries, real product. **Lacks:** snapshot/restore, pooling, batched eval, env listing, compile-to-binary — none of which are very useful in dynamic languages anyway. `topup` should steal its operational design choices verbatim where they apply (interrupt prefix, reset escalation, oversized-output strategy).
+- **[`kkokosa/repl-mcp`](https://github.com/kkokosa/repl-mcp)** — name collision; it's an MCP *client* CLI for testing servers, not a language REPL. Listed only to disambiguate.
+
+### Where `topup` fits
+
+The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific niche is empty: the one OCaml MCP server with an eval tool is deliberately stateless, and the `mcp-repl` analogue is R/Python-only. The combination `topup` claims — typed persistence + native JIT + replay checkpoints + compile-to-binary — is not on offer anywhere else, and the typed-recall argument is strictly stronger in OCaml than in any dynamic language.
 
 ## Out of scope (initial)
 
@@ -141,3 +160,6 @@ The first concrete consumer is BlockSci's Tier-2 interactive query UX — see `~
 - **`compile_to_binary` packaging.** Single `.ml` + a build command, or a synthesized `dune-project`? The single-file form is simpler for one-shot deploys; the dune-project form is necessary as soon as the query depends on libraries beyond the stdlib.
 - **Pre-warming policy.** Which sessions get pre-warmed at startup, and how is the configuration expressed — a config file, an idempotent "ensure-session" tool, or both?
 - **Display hooks.** Custom printers (à la `#install_printer`) for domain types (e.g. BlockSci's `tx`, `block`) are how the toplevel becomes ergonomic for a specific consumer. How does a session declare its printers without coupling `topup` to any particular library?
+- **Oversized output.** mcp-repl handles this with `--oversized-output {pager,files}` — either elide and offer pagination, or write to a structured bundle and return a file path. LLM context wrecks itself on multi-megabyte stdouts; `topup` needs a policy from day 1. The OCaml-specific twist: a `value_repr` for a `Bigarray` or a deep tree can be arbitrarily large even when stdout is empty, so the policy applies to the `value_repr` field too, not just `stdout`.
+- **Per-client sandbox policy.** mcp-repl ships different defaults for Claude vs. Codex (the latter inherits the host sandbox, the former gets workspace-write). Should `topup` differentiate by client identity, or expose a single configurable policy and let the operator set it?
+- **Idle detection.** mcp-repl's embedded-interpreter design lets it know precisely when the interpreter is idle, sidestepping the "did the prompt come back?" heuristic. `topup`'s Dynlink scheme inherits this property (the `Dynlink.loadfile` call returns when evaluation completes); worth confirming this holds for phrases that spawn `Lwt`/`Eio` fibers — what counts as "done" when there are background fibers still scheduled?
