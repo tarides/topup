@@ -44,7 +44,23 @@ let () =
   let bindings = Session.env s in
   let has n = List.exists (fun (b : Session.binding) -> b.name = n) bindings in
   if not (has "alpha" && has "beta" && has "x") then begin
-    print_endline "FAIL env listing missing entries";
+    print_endline "FAIL env listing missing user entries";
+    exit 1
+  end;
+  if List.exists
+       (fun (b : Session.binding) -> b.name = "print_endline")
+       bindings
+  then begin
+    print_endline "FAIL env default leaked stdlib bindings";
+    exit 1
+  end;
+  let all_bindings = Session.env ~all:true s in
+  if not
+       (List.exists
+          (fun (b : Session.binding) -> b.name = "print_endline")
+          all_bindings)
+  then begin
+    print_endline "FAIL env ~all:true missed stdlib bindings";
     exit 1
   end;
   (match Session.lookup s "alpha" with

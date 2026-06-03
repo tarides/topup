@@ -12,7 +12,7 @@ Strip leading whitespace from `<args>`. Then look at the first token.
 
 | First token | Action | Tool | Arguments |
 |-------------|--------|------|-----------|
-| `#env`      | List bindings    | `mcp__topup__env`    | rest of line, if non-empty, becomes `filter` |
+| `#env`      | List user bindings (stdlib is hidden) | `mcp__topup__env` | if the rest of line contains `--all`, pass `all: true` to the tool. Any remaining tokens become the `filter`. |
 | `#lookup`   | Inspect a binding | `mcp__topup__lookup` | rest of line is `name` (required; if missing, ask the user) |
 | `#reset`    | Discard environment | `mcp__topup__reset`  | none |
 | `#cancel`   | Interrupt running eval | `mcp__topup__cancel` | none |
@@ -51,7 +51,8 @@ For every tool, keep the response terse — the user is at a REPL.
 ### env
 
 - Print one line per binding: `<name> : <type>`.
-- If the result list is empty, say so explicitly.
+- If the result list is empty, say so explicitly. (Default scope is
+  user bindings; suggest `/caml #env --all` to also see stdlib.)
 - Skip the `location` and `preview` fields unless the user asks for
   them — the table view is the point.
 

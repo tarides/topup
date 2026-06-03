@@ -23,7 +23,10 @@ let eval_schema =
   object_schema ~required:[ "source" ]
     [ ("source", string_prop); ("timeout", number_prop) ]
 
-let env_schema = object_schema [ ("filter", string_prop) ]
+let bool_prop = `Assoc [ ("type", `String "boolean") ]
+
+let env_schema =
+  object_schema [ ("filter", string_prop); ("all", bool_prop) ]
 
 let lookup_schema =
   object_schema ~required:[ "name" ] [ ("name", string_prop) ]
@@ -37,7 +40,9 @@ let descriptors : Yojson.Safe.t list =
         "Evaluate one or more OCaml phrases in the persistent toplevel session."
       ~schema:eval_schema;
     tool_def ~name:"env"
-      ~description:"List current value bindings as (name, type)."
+      ~description:
+        "List user-defined value bindings as (name, type). Stdlib and \
+         library bindings are hidden unless all:true is passed."
       ~schema:env_schema;
     tool_def ~name:"lookup"
       ~description:"Inspect a single binding by name."
@@ -126,6 +131,9 @@ let get_float args key =
   | Some (`Int i) -> Some (float_of_int i)
   | _ -> None
 
+let get_bool args key =
+  match get_field args key with Some (`Bool b) -> Some b | _ -> None
+
 let dispatch session name (args : Yojson.Safe.t) : Yojson.Safe.t =
   match name with
   | "eval" -> (
@@ -137,7 +145,8 @@ let dispatch session name (args : Yojson.Safe.t) : Yojson.Safe.t =
           json_result (json_of_eval_result r))
   | "env" ->
       let filter = get_string args "filter" in
-      let bs = Session.env ?filter session in
+      let all = get_bool args "all" in
+      let bs = Session.env ?filter ?all session in
       json_result (`List (List.map json_of_binding bs))
   | "lookup" -> (
       match get_string args "name" with

@@ -151,7 +151,7 @@ let format_type_expr (ty : Types.type_expr) =
   Format.pp_print_flush ppf ();
   Buffer.contents buf
 
-let env ?filter _t : binding list =
+let env ?filter ?(all = false) _t : binding list =
   let env = !Toploop.toplevel_env in
   let bindings =
     Env.fold_values
@@ -164,6 +164,14 @@ let env ?filter _t : binding list =
         }
         :: acc)
       None env []
+  in
+  let bindings =
+    if all then bindings
+    else
+      List.filter
+        (fun b ->
+          match b.location with Some l -> l.file = "<eval>" | None -> false)
+        bindings
   in
   match filter with
   | None -> bindings

@@ -22,8 +22,11 @@ val create : unit -> t
     interrupted after that many seconds and a cancellation error is returned. *)
 val eval : ?timeout:float -> t -> string -> eval_result
 
-(** Enumerate current bindings, optionally name-prefix filtered. *)
-val env : ?filter:string -> t -> binding list
+(** Enumerate current bindings, optionally name-prefix filtered. By default
+    only user-defined bindings (those originating from an [<eval>] phrase)
+    are returned; pass [~all:true] to also include stdlib / predef and
+    other library bindings. *)
+val env : ?filter:string -> ?all:bool -> t -> binding list
 
 (** Look up one binding by name. *)
 val lookup : t -> string -> binding option
