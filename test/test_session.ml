@@ -188,4 +188,19 @@ let () =
     exit 1
   end;
   (try Sys.remove log_path with _ -> ());
+  Session.reset s_logged;
+  let _ = Session.eval s_logged "type tag = Foo | Bar;;" in
+  let _ =
+    Session.eval s_logged
+      "let pp_tag ppf = function Foo -> Format.pp_print_string ppf \"FOO!\" \
+       | Bar -> Format.pp_print_string ppf \"BAR!\";;"
+  in
+  let _ = Session.eval s_logged "#install_printer pp_tag;;" in
+  let r = Session.eval s_logged "Foo;;" in
+  (match r.value_repr with
+   | Some "FOO!" -> ()
+   | _ ->
+       Printf.printf "FAIL #install_printer: got %s\n"
+         (Option.value ~default:"<none>" r.value_repr);
+       exit 1);
   print_endline "test_session: ok"

@@ -187,6 +187,6 @@ Open questions, partitioned by what blocks code-writing versus what blocks a use
 - **Batched eval.** Per-phrase round-trip cost (~150 ms compile + protocol overhead) dominates for tight inner loops. `eval_batch([source; source; …])` is probably load-bearing at agent-loop rates.
 - **`compile_to_binary` packaging.** Single `.ml` + a build command (simpler for one-shot deploys) vs. synthesized `dune-project` (necessary for non-stdlib deps).
 - **Pre-warming policy.** Config file, idempotent "ensure-session" tool, or both?
-- **Display hooks.** Custom printers (`#install_printer`) for domain types — how does a session declare them without coupling `topup` to any particular library?
+- **Display hooks.** `#install_printer` works as-is — Toploop embeds the custom printer in the Outcometree before our hook fires, and `!Oprint.out_value` honours it. Open question is only *how* a session declares its standard printers without coupling `topup` to any particular library (e.g. a discovery mechanism or a per-package `topup_printers.ml`).
 - **Per-client sandbox policy.** Differentiate by client identity (mcp-repl's Claude-vs-Codex split), or single configurable policy?
 - **Pooling, checkpoint/replay, multi-protocol frontends, native JIT.** All in the design; none blocks v1.
