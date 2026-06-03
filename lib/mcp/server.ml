@@ -82,3 +82,47 @@ let run ~ic ~oc ~session =
     | Some _ -> loop ()
   in
   loop ()
+
+let prepare_socket_path path =
+  match Unix.stat path with
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+  | exception Unix.Unix_error (err, _, _) ->
+      failwith
+        (Printf.sprintf "topup-mcp: cannot stat %s: %s" path
+           (Unix.error_message err))
+  | _ ->
+      let probe = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      let live =
+        match Unix.connect probe (Unix.ADDR_UNIX path) with
+        | () -> true
+        | exception Unix.Unix_error (Unix.ECONNREFUSED, _, _) -> false
+        | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
+        | exception Unix.Unix_error _ -> false
+      in
+      (try Unix.close probe with _ -> ());
+      if live then
+        failwith
+          (Printf.sprintf
+             "topup-mcp: socket %s is in use by another process" path);
+      (try Unix.unlink path
+       with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
+
+let serve_unix ~path ~session =
+  prepare_socket_path path;
+  let server = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  Unix.bind server (Unix.ADDR_UNIX path);
+  Unix.listen server 1;
+  at_exit (fun () ->
+      try Unix.unlink path with _ -> ());
+  Sys.set_signal Sys.sigterm
+    (Sys.Signal_handle (fun _ -> exit 0));
+  (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore
+   with Invalid_argument _ -> ());
+  while true do
+    let client, _ = Unix.accept server in
+    let ic = Unix.in_channel_of_descr client in
+    let oc = Unix.out_channel_of_descr client in
+    (try run ~ic ~oc ~session with _ -> ());
+    (try close_in ic with _ -> ());
+    (try close_out oc with _ -> ())
+  done

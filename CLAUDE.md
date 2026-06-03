@@ -23,9 +23,12 @@ lib/topup/    Session API around Toploop (eval, env, lookup, reset, cancel)
               + Capture (fd dup2 + drain threads) + Pretty (depth/byte caps)
               + Spill (oversized-output overflow files)
               + Error (Location.error_of_exn → structured JSON)
-lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio: Rpc, Server, Tools
-bin/main.ml   wires Session + Server to stdin/stdout; reads TOPUP_LOG env var
-test/         test_session.ml (unit) + test_mcp.ml (in-process integration)
+lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio or Unix
+              socket: Rpc, Server (run + serve_unix), Tools
+bin/main.ml   wires Session + Server to stdin/stdout (default) or to
+              a Unix socket via `--socket <path>`; reads TOPUP_LOG
+test/         test_session.ml (unit) + test_mcp.ml (in-process MCP)
+              + socket.t, socket_lifecycle.t (cram against the binary)
 ```
 
 ## Things you need to know to change `Session`

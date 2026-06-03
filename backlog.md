@@ -5,53 +5,6 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## Unix-socket transport for `topup-mcp`
-
-Add a `--socket <path>` mode that binds a Unix socket and dispatches
-newline-delimited JSON-RPC against the same long-lived `Session.t`.
-No HTTP, no protocol changes — just rebind stdio to a socket and
-accept connections in a loop. Single-session semantics carry over
-unchanged; the dispatcher serialises requests across connections.
-
-Motivation is **debugging and reproducible test fixtures**, not
-multi-client serving. With the socket in place, the client side is
-generic Unix plumbing — no new topup binary needed:
-
-```sh
-  $ topup-mcp --socket "$TMPDIR/topup.sock" &
-  $ echo 'let x = 1+2;;' \
-  >   | jq -Rsc '{jsonrpc:"2.0",id:1,method:"tools/call",
-  >               params:{name:"eval",arguments:{source:.}}}' \
-  >   | ncat -U "$TMPDIR/topup.sock" \
-  >   | jq -r '.result.value_repr'
-  val x : int = 3
-```
-
-Each dune cram `$` stanza is a fresh process talking to the same
-long-running daemon over the socket; state persists across stanzas
-because the shell holding the daemon is one long-lived process (see
-`cram_exec.ml:create_sh_script` — every stanza runs in a single
-`main.sh`).
-
-Knock-on uses:
-
-- **Cram-based regression tests** for the eval pipeline driven from
-  `.t` files (the `lattice.t` shape, but stateful across stanzas).
-- **Transcript replay**: an agent's real MCP session, tee'd into a
-  cram-shaped `.t` file, becomes a deterministic regression
-  fixture. See the earlier discussion on `.t`-as-transcript.
-- **Live introspection** while a session is running — attach a
-  second client, run `env` / `lookup` without disrupting the agent.
-
-Smallest form of [[HTTP / daemon transport]]: same shape, no HTTP,
-no multi-client concurrency. Unblocks the [[Remote execution via
-SSH port forwarding]] item too — SSH forwards Unix sockets
-natively.
-
-DESIGN.md, phase-1 implementation choice "MCP transport" (currently
-"stdio only"); "Out of scope (initial)" — distributed sessions
-become reachable once a socket exists.
-
 ## Idle-detection contract for background fibres
 
 When does `eval` finish if the phrase spawns Lwt/Eio fibres? Default
@@ -280,3 +233,46 @@ Prior art: `tarides/sudo-proxy` README, "Deploying to a remote
 host" and "Usage" sections; in particular the
 `ssh -t -L /tmp/sudo-proxy-HOST.sock:/run/user/$(ssh HOST id -u)/sudo-proxy.sock HOST sudo-proxy`
 recipe and the MCP `start_server` / `execute(host=…)` shape.
+
+## Multi-connection socket transport with serialized dispatch
+
+`--socket` mode currently serves one client at a time: the accept
+loop runs the protocol loop to EOF before accepting the next
+connection. The deferred half of that work is **live introspection
+during a busy session** — attach a second client to run `env` /
+`lookup` while the primary client's `eval` is mid-flight.
+
+Implementation: spawn one thread per accepted connection (already
+available via `threads.posix`); add a `Mutex.t` inside `Server`
+that serialises per-message dispatch so Toploop non-reentrance is
+preserved. The mutex must wrap `Tools.dispatch` calls, not the
+entire `run` loop, otherwise a slow client starves the others.
+
+Open questions:
+
+- Does `cancel` from connection B actually interrupt an `eval`
+  running on connection A? `Session.cancel` already drives
+  `SIGINT` to `main_pid`, which is the right primitive — but
+  the cancel notification has to be processed *while* the mutex
+  is held by another thread. Either: (a) cancel runs lock-free
+  by going straight to `Session.cancel` without acquiring the
+  mutex, or (b) cancel goes on a priority queue. (a) is simpler;
+  cancel is already idempotent and just sets a flag the watchdog
+  reads.
+- Connection accounting on `reset` — a `reset` from one client
+  invalidates state another client may be in the middle of
+  observing. Probably fine to accept the race; document it.
+- Should the second connection's responses be marked somehow
+  (e.g. include a connection id)? Probably not for v1; clients
+  correlate by `id` like any JSON-RPC peer.
+
+Cram fixture from the v1 socket transport (`test/socket.t`) is the
+natural regression seed: extend it with a stanza that holds a
+long-running `eval` on one connection while the second connection
+issues `env` / `lookup` / `cancel`.
+
+DESIGN.md, phase-1 implementation choice "MCP transport"; bullet
+"Live introspection while a session is running" in the original
+backlog entry for socket transport (now closed; see
+`changelog.md` 2026-06-03 entry "Unix-socket transport for
+`topup-mcp`").

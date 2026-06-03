@@ -156,8 +156,8 @@ The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific nich
 
 - **Scope:** `eval` / `env` / `lookup` / `reset` / `cancel`. Single session. Defer `load`, `checkpoint`/`restore`, `compile_to_binary`, pooling.
 - **Code structure:** core library (`topup-core`, the `Session` API) + thin protocol shim (`topup-mcp`) as separate dune libraries from day 1. Future Jupyter / CLI frontends slot in beside `topup-mcp`.
-- **MCP transport:** stdio only. One topup process per client; pre-warming happens during server startup before accepting tool calls. HTTP / daemon mode deferred.
-- **MCP framework:** roll our own minimal layer — `initialize` + `tools/list` + `tools/call` + `notifications/cancelled` over stdio, ~500-800 LOC. Revisit when HTTP or richer features (resources, prompts) arrive.
+- **MCP transport:** stdio by default; a Unix-socket mode (`topup --socket <path>`) speaks the same JSON-RPC against the same long-lived `Session.t`, one client at a time, smallest form of the deferred HTTP / daemon transport. One topup process per client; pre-warming happens during server startup before accepting tool calls.
+- **MCP framework:** roll our own minimal layer — `initialize` + `tools/list` + `tools/call` + `notifications/cancelled` over newline-delimited JSON-RPC, ~500-800 LOC. Revisit when HTTP or richer features (resources, prompts) arrive.
 - **OCaml floor:** 5.1+. Modern dune, modern compiler-libs, effect handlers available for user code.
 - **Driver model:** bytecode driver + native `.cmxs` plugins (the `ocaml_plugin` shape). Driver runs as bytecode for mature `Toploop` reflection and easier `Dynlink` lifecycle; user phrases compile to native `.cmxs` for native-speed evaluation.
 

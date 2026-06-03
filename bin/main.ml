@@ -10,4 +10,13 @@ let resolve_log_path () =
 let () =
   let log_path = resolve_log_path () in
   let session = Topup.Session.create ?log_path () in
-  Mcp.Server.run ~ic:stdin ~oc:stdout ~session
+  match Array.to_list Sys.argv with
+  | [ _ ] -> Mcp.Server.run ~ic:stdin ~oc:stdout ~session
+  | [ _; "--socket"; path ] -> (
+      try Mcp.Server.serve_unix ~path ~session
+      with Failure msg ->
+        prerr_endline msg;
+        exit 1)
+  | _ ->
+      prerr_endline "usage: topup-mcp [--socket <path>]";
+      exit 2

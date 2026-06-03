@@ -75,6 +75,8 @@ eval   { source: "let rec spin n = spin n;;", timeout: 0.3 }
 
 ## Status
 
-Phase-1 MVP: bytecode toplevel, single session, stdio MCP only.
-`load`, `checkpoint`/`restore`, native-JIT, pooling, and
-`compile_to_binary` are deferred — see DESIGN.md.
+Phase-1 MVP: bytecode toplevel, single session, MCP over stdio
+(default) or a Unix domain socket (`topup --socket <path>` — one
+client at a time, state persists across connections). `load`,
+`checkpoint`/`restore`, native-JIT, pooling, and `compile_to_binary`
+are deferred — see DESIGN.md.

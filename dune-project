@@ -5,6 +5,8 @@
 
 (generate_opam_files true)
 
+(cram enable)
+
 (authors "Cuihtlauac ALVARADO <cuihtlauac@tarides.com>")
 (maintainers "Cuihtlauac ALVARADO <cuihtlauac@tarides.com>")
 (license ISC)

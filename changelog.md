@@ -3,6 +3,112 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — Expand cram coverage for the socket transport
+
+Follow-up to the socket-transport entry below. The original
+`test/socket.t` was a single state-persistence smoke; this turns it
+into a full surface walk and adds a second fixture for daemon /
+socket-file lifecycle.
+
+- `test/socket_client.ml` grew three subcommands: `env [filter]`
+  (prints `name : type` sorted, `(empty)` when no bindings),
+  `lookup <name>` (prints `name : type` or `(not found)`), and
+  `reset` (prints the tool's text result, e.g. `ok`). The existing
+  `request` and `eval` subcommands are unchanged; one new
+  `do_call ~path ~name ~args ~handle` helper centralises the
+  connect/send/recv/close dance.
+- `test/socket.t` now exercises eval (success + type error), env
+  (with two bindings, sorted), lookup (hit + miss), reset, and
+  post-reset env / lookup — each as a separate connection, so the
+  fixture doubles as an assertion that state survives between
+  connections for every tool. Sandboxed via `TOPUP_LOG=off` and
+  `TOPUP_SPILL_DIR="$PWD/spill"` so the daemon doesn't write into
+  the developer's `~/.topup/`.
+- `test/socket_lifecycle.t` (new) covers the daemon side: bad argv
+  (`--bogus`, `--socket` with no path) → exit 2 + usage line;
+  live-peer refusal — second daemon on the bound path exits 1 with
+  the *socket in use* message; SIGTERM cleanup — socket file
+  unlinked after the daemon dies; stale-file recovery — `touch` a
+  plain file at the socket path, observe the next daemon unlinks
+  it and binds a real socket in its place.
+
+Both `.t` files passed locally; `dune runtest --force` is green
+across `test_session`, `test_mcp`, `socket.t`, and
+`socket_lifecycle.t`. The cram surface now substantially overlaps
+with `test_mcp.ml` for the tool-call shape, but exercises it
+through the real binary and a real Unix socket, so it catches
+install / argv / signal-handler regressions that the in-process
+pipe test cannot.
+
+## 2026-06-03 — Unix-socket transport for `topup-mcp`
+
+Closed the top backlog item. Added a `--socket <path>` mode that
+binds a Unix domain socket and serves the same newline-delimited
+JSON-RPC 2.0 protocol against the same long-lived `Topup.Session.t`.
+Stdio mode is unchanged when no flag is given; `topup --socket
+<path>` switches the binary into daemon mode.
+
+Design decisions (locked with the user before implementation):
+
+- **One connection at a time.** The accept loop services a single
+  client until EOF, then accepts the next. No mutex in `lib/mcp`,
+  no threads in production code — Toploop non-reentrance is
+  preserved trivially. The deferred multi-connection-with-mutex
+  variant (live introspection: attach a second client to run
+  `env` / `lookup` without disrupting the primary) gets a new
+  backlog item.
+- **Probe-then-unlink stale paths.** If the socket file exists at
+  startup, a probe `connect()` decides: success → refuse to start
+  (live peer); `ECONNREFUSED` / `ENOENT` → unlink and bind. Stale
+  files (e.g. after a `kill -9`) are recovered automatically; a
+  running daemon is protected from accidental takeover.
+- **Cleanup on exit.** `at_exit` unlinks the socket; a `SIGTERM`
+  handler calls `exit 0` so the cleanup fires under normal shell
+  termination. `SIGINT` is left to `Sys.catch_break` because the
+  in-process cancel mechanism relies on it (`Session.cancel`
+  delivers `SIGINT` to `main_pid`). `SIGPIPE` is ignored so a
+  hung-up client raises `Sys_error` in the per-connection wrapper
+  rather than killing the daemon.
+
+Files:
+
+- `lib/mcp/server.{ml,mli}` — new `serve_unix : path:string ->
+  session:Topup.Session.t -> unit` plus a `prepare_socket_path`
+  helper. `Server.run`'s transport-agnostic shape (`~ic ~oc
+  ~session`) made the addition purely a wrapper; no refactor of
+  dispatch was needed.
+- `bin/main.ml` — hand-rolled argv match (no Cmdliner / Arg, since
+  the binary still has only one flag). `Failure` from
+  `serve_unix` (live-peer refusal, stat errors) is caught and
+  printed as a single error line, exit 1.
+- `dune-project` — `(cram enable)`.
+- `test/dune` — new `socket_client.bc.exe` executable; `(cram
+  (deps %{bin:topup} ./socket_client.bc.exe))` so cram tests get
+  both binaries.
+- `test/socket_client.ml` — small helper used by `.t` fixtures.
+  Two subcommands: `request <json-line>` (raw round-trip) and
+  `eval <source>` (builds the `tools/call eval` envelope, prints
+  just `value_repr` or `ERROR: …`). Keeps cram expected-output
+  blocks short and deterministic; avoids the `ncat` / `socat`
+  dependency the backlog example used.
+- `test/socket.t` — first cram fixture. Demonstrates the
+  motivating scenario: state persists across separate client
+  connections to the same daemon (`let x = 21 * 2;;` in one
+  connection, `x;;` in the next, both print `42`). Also asserts
+  the socket file is unlinked after SIGTERM.
+
+Verified manually:
+
+- Live-peer refusal — second `topup --socket <same path>` exits 1
+  with `socket <path> is in use by another process`.
+- Stale-file recovery — `touch <path>` to create a plain file,
+  start the daemon, observe the file is unlinked and a real
+  socket is bound in its place.
+- Usage path — bad flag → `usage: topup-mcp [--socket <path>]`,
+  exit 2.
+- Stdio path is unaffected — `dune runtest` still drives the
+  in-process pipe test the same way it did before.
+
 ## 2026-06-03 — Oversized-output policy: spill to files
 
 Closed the first phase-1 backlog item. Picked the **files** half of

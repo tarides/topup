@@ -2,3 +2,11 @@
  (names test_session test_mcp)
  (modes byte)
  (libraries topup mcp unix threads.posix))
+
+(executable
+ (name socket_client)
+ (modes byte_complete)
+ (libraries unix yojson))
+
+(cram
+ (deps %{bin:topup} ./socket_client.bc.exe))
