@@ -1,4 +1,6 @@
 (executable
  (name main)
+ (public_name topup)
+ (package topup)
  (modes byte_complete)
  (libraries topup mcp))
