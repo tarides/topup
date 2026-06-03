@@ -154,12 +154,40 @@ The first concrete consumer is BlockSci's Tier-2 interactive query UX — see `~
 - **Error format:** structured `{phase: typecheck | runtime, location, message, related}`. LLMs parse JSON better than human-format compiler diagnostics.
 - **Recovery / checkpoint mechanism:** phrase replay from a checkpoint log, not Marshal of values (issue #5215).
 
-## Open questions
+## Phase-1 planning
 
-- **Batched eval.** Per-phrase round-trip cost (~150 ms compile + protocol overhead) dominates for tight inner loops where the model writes 5–10 short phrases. A `eval_batch([source; source; …])` tool is probably load-bearing for the latency thesis at agent-loop rates, not a nice-to-have.
-- **`compile_to_binary` packaging.** Single `.ml` + a build command, or a synthesized `dune-project`? The single-file form is simpler for one-shot deploys; the dune-project form is necessary as soon as the query depends on libraries beyond the stdlib.
-- **Pre-warming policy.** Which sessions get pre-warmed at startup, and how is the configuration expressed — a config file, an idempotent "ensure-session" tool, or both?
-- **Display hooks.** Custom printers (à la `#install_printer`) for domain types (e.g. BlockSci's `tx`, `block`) are how the toplevel becomes ergonomic for a specific consumer. How does a session declare its printers without coupling `topup` to any particular library?
-- **Oversized output.** mcp-repl handles this with `--oversized-output {pager,files}` — either elide and offer pagination, or write to a structured bundle and return a file path. LLM context wrecks itself on multi-megabyte stdouts; `topup` needs a policy from day 1. The OCaml-specific twist: a `value_repr` for a `Bigarray` or a deep tree can be arbitrarily large even when stdout is empty, so the policy applies to the `value_repr` field too, not just `stdout`.
-- **Per-client sandbox policy.** mcp-repl ships different defaults for Claude vs. Codex (the latter inherits the host sandbox, the former gets workspace-write). Should `topup` differentiate by client identity, or expose a single configurable policy and let the operator set it?
-- **Idle detection.** mcp-repl's embedded-interpreter design lets it know precisely when the interpreter is idle, sidestepping the "did the prompt come back?" heuristic. `topup`'s Dynlink scheme inherits this property (the `Dynlink.loadfile` call returns when evaluation completes); worth confirming this holds for phrases that spawn `Lwt`/`Eio` fibers — what counts as "done" when there are background fibers still scheduled?
+Open questions, partitioned by what blocks code-writing versus what blocks a useful release.
+
+### Must answer before writing code
+
+These shape project structure; cheap to decide now, expensive to revisit.
+
+- **Phase-1 scope cut.** What's in v1 vs. deferred? Minimal target: single session, `eval`/`env`/`lookup`/`reset`/`cancel`. Defer `checkpoint`, `load`, `compile_to_binary`, pooling.
+- **Library/binary split.** Core library + thin protocol shim from day 1, or monolith first? The library shape determines whether the MCP layer is 200 lines or 2000.
+- **MCP framework choice.** Depend on tmattio's `mcp`/`mcp-eio`/`mcp-sdk` (early but exist, OCaml-native), roll our own, or bridge via a non-OCaml MCP library. The first consolidates the ecosystem; worth a conversation with Thibaut before committing.
+- **utop integration depth.** Depend on `utop` as a library, vendor `UTop.parse_input` and friends, or write phrase-boundary detection ad hoc. utop is heavyweight for a server that wants neither lwt nor a terminal.
+- **OCaml version floor.** 4.14, 5.0, 5.1+? Affects effect-handler support in user code, driver concurrency choice, and `Toploop` interaction.
+- **Driver: bytecode or native.** Bytecode driver + native plugin loading is the `ocaml_plugin` shape and likely right for v1. Fully native is harder; fully bytecode defeats the latency thesis.
+- **Stdout/stderr capture mechanism.** `Toploop` hooks vs. fd-level dup-and-pipe. Only the fd approach catches C-stub output and post-`eval` Lwt-fiber writes.
+
+### Must answer before phase-1 ships
+
+- **Value representation.** Reuse `Toploop.print_value` with depth/length caps, or custom pretty-printer with elision? Custom is necessary for the oversized-output policy below.
+- **Oversized output.** mcp-repl handles this with `--oversized-output {pager,files}` — either elide and offer pagination, or write to a structured bundle and return a file path. LLM context wrecks itself on multi-megabyte stdouts; the policy applies to `value_repr` too, not just `stdout` (a `Bigarray` pretty-prints arbitrarily large with empty stdout).
+- **Idle detection under concurrency.** When has `eval` finished if the phrase spawns Lwt/Eio fibers? Default contract: `eval` returns when the top-level expression returns; background fibers are the user's problem and die at `reset`. Document loudly.
+- **Phrase log persistence.** Per-session JSONL on disk, plain `.ml` concatenation, or in-memory only? In-memory is fine for v1 if `checkpoint` is deferred.
+- **Testing strategy.** Unit tests on `Session`, integration tests via an in-process MCP client, optional LLM-in-the-loop smoke tests. First two block v1; third is operational.
+
+### Pragmatic / consumer-side
+
+- **What does BlockSci's Tier-2 query UX actually need?** Per `~/Projects/BlockSci/PLAN_MOBILE_CODE.md`. If libblocksci is required from turn 1, `load` and pre-warming become more load-bearing than the minimal-v1 cut admits.
+- **Conversation with Thibaut Mattio.** Before phase-1: is his MCP stack compatible with topup's needs? Would he merge stateful-eval into `ocaml-mcp`, or is a separate server consuming his libraries the right path?
+
+### Can defer (phase-2 or later)
+
+- **Batched eval.** Per-phrase round-trip cost (~150 ms compile + protocol overhead) dominates for tight inner loops. `eval_batch([source; source; …])` is probably load-bearing at agent-loop rates.
+- **`compile_to_binary` packaging.** Single `.ml` + a build command (simpler for one-shot deploys) vs. synthesized `dune-project` (necessary for non-stdlib deps).
+- **Pre-warming policy.** Config file, idempotent "ensure-session" tool, or both?
+- **Display hooks.** Custom printers (`#install_printer`) for domain types — how does a session declare them without coupling `topup` to any particular library?
+- **Per-client sandbox policy.** Differentiate by client identity (mcp-repl's Claude-vs-Codex split), or single configurable policy?
+- **Pooling, checkpoint/replay, multi-protocol frontends, native JIT.** All in the design; none blocks v1.
