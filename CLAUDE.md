@@ -164,9 +164,10 @@ phrase failed mid-replay and the session is in an intermediate state.
 - The MCP tools are deferred — load schemas via
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
   The full set is `eval`, `eval_batch`, `env`, `lookup`, `reset`,
-  `cancel`, `load`, `checkpoint`, `restore`, `start_session`,
-  `restart_session`, `update_host`, `start_local_session`,
-  `restart_local_session`, `update_local_session`.
+  `cancel`, `load`, `checkpoint`, `restore`, `compile_to_binary`,
+  `start_session`, `restart_session`, `update_host`,
+  `start_local_session`, `restart_local_session`,
+  `update_local_session`.
 
 ## Multi-host routing (per-call `host:`)
 

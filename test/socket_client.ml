@@ -132,6 +132,23 @@ let result_is_error response =
   | Some (`Assoc fs) -> List.assoc_opt "isError" fs = Some (`Bool true)
   | _ -> false
 
+let print_compile response =
+  let text = extract_text response in
+  if result_is_error response then print_endline ("ERROR: " ^ text)
+  else
+    match Yojson.Safe.from_string text with
+    | exception _ -> print_endline text
+    | payload -> (
+        match get_field payload "ok" with
+        | Some (`Bool true) -> (
+            match get_field payload "binary_path" with
+            | Some (`String p) -> Printf.printf "ok %s\n" p
+            | _ -> print_endline "ok")
+        | _ -> (
+            match get_field payload "build_log" with
+            | Some (`String log) -> print_endline ("BUILD FAILED:\n" ^ log)
+            | _ -> print_endline "BUILD FAILED"))
+
 let print_restore response =
   let text = extract_text response in
   if result_is_error response then print_endline ("ERROR: " ^ text)
@@ -191,6 +208,26 @@ let () =
       do_call ~path ~name:"restore"
         ~args:(`Assoc [ ("label", `String label) ])
         ~handle:print_restore
+  | [ _; path; "compile"; entry; out ] ->
+      do_call ~path ~name:"compile_to_binary"
+        ~args:
+          (`Assoc [ ("entry", `String entry); ("out", `String out) ])
+        ~handle:print_compile
+  | [ _; path; "compile"; entry; out; libs ] ->
+      let library_names =
+        if libs = "" then []
+        else String.split_on_char ',' libs
+      in
+      do_call ~path ~name:"compile_to_binary"
+        ~args:
+          (`Assoc
+            [
+              ("entry", `String entry);
+              ("out", `String out);
+              ( "libraries",
+                `List (List.map (fun s -> `String s) library_names) );
+            ])
+        ~handle:print_compile
   | _ ->
       prerr_endline "usage:";
       prerr_endline
@@ -202,4 +239,6 @@ let () =
       prerr_endline "  socket_client.exe <path> load <cma-path>";
       prerr_endline "  socket_client.exe <path> checkpoint <label>";
       prerr_endline "  socket_client.exe <path> restore <label>";
+      prerr_endline
+        "  socket_client.exe <path> compile <entry> <out-dir> [libs-csv]";
       exit 2

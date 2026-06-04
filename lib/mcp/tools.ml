@@ -85,6 +85,16 @@ let checkpoint_schema =
 
 let restore_schema = checkpoint_schema
 
+let compile_to_binary_schema =
+  object_schema ~required:[ "entry"; "out" ]
+    [
+      ("entry", string_prop);
+      ("out", string_prop);
+      ("libraries", array_string_prop);
+      ("host", host_prop);
+      ("session", session_prop);
+    ]
+
 let start_session_schema =
   object_schema ~required:[ "host" ]
     [ ("host", host_prop); ("remote_socket", string_prop) ]
@@ -222,6 +232,34 @@ let descriptors : Yojson.Safe.t list =
          checkpoints are per-host (the remote daemon's own checkpoint \
          dir is what gets restored)."
       ~schema:restore_schema;
+    tool_def ~name:"compile_to_binary"
+      ~description:
+        "Promote the current session into a standalone native binary. \
+         The phrase log is dumped verbatim into a synthesised dune \
+         project under `out`, built with `dune build`, and the \
+         resulting executable is copied to `out/main.exe`. v1 takes \
+         the whole successful-phrase log — curate by `restore`-ing a \
+         clean checkpoint first if the log carries exploratory \
+         clutter. `entry` is the name of a binding currently in scope \
+         with type `unit -> _`; the synthesised wrapper is `let () = \
+         ignore (<entry> ())`. `libraries` is an optional list of \
+         findlib package names (e.g. [\"yojson\", \"re\"]); each is \
+         emitted as a `(libraries ...)` entry in the synthesised \
+         dune file. `out` must be an absolute path: created on \
+         demand, refused if non-empty without a prior \
+         `.topup-promote` marker (so re-runs in the same directory \
+         work). Returns `{ ok, binary_path, build_log }` — `ok=false` \
+         with the dune output in `build_log` means inputs were \
+         valid but the build failed. Known limitations: \
+         `#load`-ed `.cma`/`.cmxs` archives are not auto-linked, and \
+         `#require`-d packages not listed in `libraries` will fail \
+         to resolve. Requires phrase logging to be enabled (TOPUP_LOG \
+         unset or pointing at a writable file) and `dune` on PATH. \
+         Optional `host` routes the call to a remote session; the \
+         binary then lands on the remote filesystem under the remote \
+         `out` path. Optional `session` routes to a named local \
+         subprocess."
+      ~schema:compile_to_binary_schema;
     tool_def ~name:"start_session"
       ~description:
         "Bring up a remote topup session on `host`. Opens an SSH tunnel \
@@ -326,6 +364,15 @@ let json_of_eval_result (r : Session.eval_result) : Yojson.Safe.t =
       ("warnings", `List (List.map (fun s -> `String s) r.warnings));
       ( "error",
         match r.error with Some e -> json_of_error e | None -> `Null );
+    ]
+
+let json_of_compile_result (r : Promote.result) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("ok", `Bool r.ok);
+      ( "binary_path",
+        if r.binary_path = "" then `Null else `String r.binary_path );
+      ("build_log", `String r.build_log);
     ]
 
 let json_of_binding (b : Session.binding) : Yojson.Safe.t =
@@ -568,6 +615,19 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
           match Session.restore session ~label with
           | Ok r -> json_result (json_of_eval_result r)
           | Error msg -> text_result ~is_error:true msg))
+  | "compile_to_binary" -> (
+      match (get_string args "entry", get_string args "out") with
+      | None, _ -> text_result ~is_error:true "missing 'entry' argument"
+      | _, None -> text_result ~is_error:true "missing 'out' argument"
+      | Some entry, Some out ->
+          let libraries =
+            Option.value (get_string_list args "libraries") ~default:[]
+          in
+          match
+            Session.compile_to_binary session ~entry ~out ~libraries
+          with
+          | Ok r -> json_result (json_of_compile_result r)
+          | Error msg -> text_result ~is_error:true msg)
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
 let dispatch_lifecycle registry name (args : Yojson.Safe.t) : Yojson.Safe.t =

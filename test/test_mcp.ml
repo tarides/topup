@@ -84,7 +84,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 15 -> ()
+       | `List tools when List.length tools = 16 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1

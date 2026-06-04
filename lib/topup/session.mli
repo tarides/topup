@@ -70,3 +70,19 @@ val restore : t -> label:string -> (eval_result, string) result
     [.ml] suffix), sorted. Returns the empty list if checkpointing is
     disabled or the directory is empty. *)
 val list_checkpoints : t -> string list
+
+(** Promote the current session into a standalone native binary. The
+    phrase log is dumped verbatim into a synthesised dune project
+    under [~out], built natively, and the resulting executable is
+    copied to [out/main.exe]. The wrapper line is
+    [let () = ignore (<entry> ())] so [entry] must have type
+    [unit -> _]. [libraries] are findlib package names that get listed
+    in the synthesised dune file's [(libraries ...)] clause. See
+    [Promote.compile_to_binary] for full semantics and error
+    conditions. *)
+val compile_to_binary :
+  t ->
+  entry:string ->
+  out:string ->
+  libraries:string list ->
+  (Promote.result, string) result

@@ -395,6 +395,9 @@ let restore t ~label =
                 Error ("restore: " ^ Unix.error_message err)
             | Sys_error msg -> Error ("restore: " ^ msg)))
 
+let compile_to_binary t ~entry ~out ~libraries =
+  Promote.compile_to_binary ~log_path:t.log_path ~entry ~out ~libraries
+
 let list_checkpoints t =
   match t.checkpoint_dir with
   | None -> []

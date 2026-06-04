@@ -428,4 +428,54 @@ let () =
   end;
   rm_rf ckpt_dir;
   (try Sys.remove ckpt_log with _ -> ());
+  (* compile_to_binary: end-to-end build of the phrase log. *)
+  let promote_log =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-promote-log-%d.ml" (Unix.getpid ()))
+  in
+  let promote_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-promote-%d" (Unix.getpid ()))
+  in
+  (try Sys.remove promote_log with _ -> ());
+  rm_rf promote_dir;
+  let s_pr = Session.create ~log_path:promote_log () in
+  let _ = Session.eval s_pr "let answer = 42;;" in
+  let _ =
+    Session.eval s_pr
+      "let main () = print_endline (string_of_int answer);;"
+  in
+  (match
+     Session.compile_to_binary s_pr ~entry:"main" ~out:promote_dir
+       ~libraries:[]
+   with
+   | Error msg ->
+       Printf.printf "FAIL compile_to_binary: %s\n" msg;
+       exit 1
+   | Ok r when not r.ok ->
+       Printf.printf "FAIL compile_to_binary build:\n%s\n" r.build_log;
+       exit 1
+   | Ok r ->
+       let ic = Unix.open_process_in r.binary_path in
+       let line = (try input_line ic with End_of_file -> "<eof>") in
+       (match Unix.close_process_in ic with
+        | Unix.WEXITED 0 -> ()
+        | _ ->
+            Printf.printf "FAIL produced binary did not exit cleanly\n";
+            exit 1);
+       check "produced binary stdout" "42" line);
+  rm_rf promote_dir;
+  (try Sys.remove promote_log with _ -> ());
+  (* compile_to_binary with logging disabled is an Error. *)
+  let s_nolog_pr = Session.create () in
+  let _ = Session.eval s_nolog_pr "let main () = ();;" in
+  (match
+     Session.compile_to_binary s_nolog_pr ~entry:"main"
+       ~out:"/tmp/topup-test-nolog-promote" ~libraries:[]
+   with
+   | Error _ -> ()
+   | Ok _ ->
+       print_endline
+         "FAIL compile_to_binary without log_path should Error";
+       exit 1);
   print_endline "test_session: ok"

@@ -105,7 +105,9 @@ subprocess sessions with pre-warming and replica pools, and any
 number of SSH-tunneled remote toplevels, with per-call `host` /
 `session` routing (see [MULTIHOST.md](MULTIHOST.md)).
 `checkpoint`/`restore` ship for branching exploration.
-`compile_to_binary` is the remaining phase-2 item — see DESIGN.md.
+`compile_to_binary` promotes a stable session into a standalone
+native ELF via a synthesized dune project — see DESIGN.md for the
+phase-2 roadmap.
 
 ## AI usage
 

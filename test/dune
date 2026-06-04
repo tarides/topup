@@ -1,12 +1,14 @@
 (tests
  (names test_session test_mcp)
  (modes byte)
+ (modules test_session test_mcp)
  (libraries topup topup_eval_byte mcp unix threads.posix)
  (deps fixtures/topup_load_fixture/topup_load_fixture.cma))
 
 (executable
  (name socket_client)
  (modes byte_complete)
+ (modules socket_client)
  (libraries unix yojson))
 
 (cram
