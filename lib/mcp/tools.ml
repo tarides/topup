@@ -21,10 +21,25 @@ let number_prop = `Assoc [ ("type", `String "number") ]
 let bool_prop = `Assoc [ ("type", `String "boolean") ]
 let host_prop = string_prop
 
+let array_string_prop : Yojson.Safe.t =
+  `Assoc
+    [
+      ("type", `String "array");
+      ("items", `Assoc [ ("type", `String "string") ]);
+    ]
+
 let eval_schema =
   object_schema ~required:[ "source" ]
     [
       ("source", string_prop);
+      ("timeout", number_prop);
+      ("host", host_prop);
+    ]
+
+let eval_batch_schema =
+  object_schema ~required:[ "sources" ]
+    [
+      ("sources", array_string_prop);
       ("timeout", number_prop);
       ("host", host_prop);
     ]
@@ -79,6 +94,21 @@ let descriptors : Yojson.Safe.t list =
          brought up via start_session; omit it (or pass \"local\") for the \
          in-process session."
       ~schema:eval_schema;
+    tool_def ~name:"eval_batch"
+      ~description:
+        "Evaluate a list of OCaml source strings sequentially in the \
+         persistent toplevel. Each element is treated like a separate \
+         `eval` call — bindings from earlier elements are visible to \
+         later ones. Stops on the first element whose `error` is \
+         non-null; the returned `results` array contains every element \
+         evaluated, in order, ending with the failing one. \
+         `stopped_on_error` is `true` iff a failure stopped the batch \
+         short of `sources.length`. `timeout` is per element, not per \
+         batch. Use `eval_batch` to amortise protocol overhead for \
+         tight inner loops, especially when `host:` routes to a remote \
+         daemon. Returns the same eval_result shape as `eval` for \
+         every element; overflow/spill semantics are unchanged."
+      ~schema:eval_batch_schema;
     tool_def ~name:"env"
       ~description:
         "List user-defined value bindings as (name, type). Stdlib and \
@@ -234,6 +264,15 @@ let get_float args key =
 let get_bool args key =
   match get_field args key with Some (`Bool b) -> Some b | _ -> None
 
+let get_string_list args key =
+  match get_field args key with
+  | Some (`List items) -> (
+      try
+        Some
+          (List.map (function `String s -> s | _ -> raise Exit) items)
+      with Exit -> None)
+  | _ -> None
+
 let remove_host_field (args : Yojson.Safe.t) : Yojson.Safe.t =
   match args with
   | `Assoc fields ->
@@ -315,6 +354,35 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
           let timeout = get_float args "timeout" in
           let r = Session.eval ?timeout session source in
           json_result (json_of_eval_result r))
+  | "eval_batch" -> (
+      match get_string_list args "sources" with
+      | None ->
+          text_result ~is_error:true
+            "'sources' must be an array of strings"
+      | Some [] ->
+          text_result ~is_error:true "'sources' must be non-empty"
+      | Some srcs ->
+          let timeout = get_float args "timeout" in
+          let rec loop acc = function
+            | [] -> (List.rev acc, false)
+            | s :: rest ->
+                let r = Session.eval ?timeout session s in
+                let acc' = r :: acc in
+                if r.error <> None && rest <> [] then
+                  (List.rev acc', true)
+                else if rest = [] then (List.rev acc', false)
+                else loop acc' rest
+          in
+          let results, stopped = loop [] srcs in
+          let payload : Yojson.Safe.t =
+            `Assoc
+              [
+                ( "results",
+                  `List (List.map json_of_eval_result results) );
+                ("stopped_on_error", `Bool stopped);
+              ]
+          in
+          json_result payload)
   | "env" ->
       let filter = get_string args "filter" in
       let all = get_bool args "all" in

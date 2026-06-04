@@ -82,7 +82,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 9 -> ()
+       | `List tools when List.length tools = 10 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
@@ -268,6 +268,110 @@ let test_host_local_aliases () =
       | `String "49" -> ()
       | _ -> fail "host:local did not share state with host omitted")
 
+let text_of resp =
+  match get_in resp [ "result"; "content" ] with
+  | `List [ `Assoc fs ] -> (
+      match List.assoc_opt "text" fs with
+      | Some (`String s) -> s
+      | _ -> fail "no text in content")
+  | _ -> fail "content shape"
+
+let test_eval_batch () =
+  with_server (fun ic oc ->
+      let call ?id sources =
+        let id = Option.value ~default:20 id in
+        let params =
+          `Assoc
+            [
+              ("name", `String "eval_batch");
+              ( "arguments",
+                `Assoc
+                  [
+                    ( "sources",
+                      `List
+                        (List.map (fun s -> `String s) sources) );
+                  ] );
+            ]
+        in
+        Mcp.Rpc.write_message oc (request id "tools/call" ~params ());
+        read_response_id ic
+      in
+      (* Three sources all succeed; bindings carry across the batch. *)
+      let r_ok = call [ "let bx = 1;;"; "let by = bx + 2;;"; "by * 10;;" ] in
+      let payload_ok = Yojson.Safe.from_string (text_of r_ok) in
+      (match get_in payload_ok [ "stopped_on_error" ] with
+       | `Bool false -> ()
+       | _ -> fail "all-ok: stopped_on_error should be false");
+      (match get_in payload_ok [ "results" ] with
+       | `List results when List.length results = 3 ->
+           let last = List.nth results 2 in
+           (match get_in last [ "value_repr" ] with
+            | `String "30" -> ()
+            | _ -> fail "all-ok: last value_repr != 30");
+           (match get_in last [ "error" ] with
+            | `Null -> ()
+            | _ -> fail "all-ok: unexpected error on last result")
+       | `List l ->
+           Printf.printf "FAIL all-ok: got %d results\n" (List.length l);
+           exit 1
+       | _ -> fail "all-ok: results shape");
+      (* Second of three errors; stop early. *)
+      let r_err =
+        call ~id:21
+          [ "let bz = 100;;"; "let bad = 1 + true;;"; "bz * 2;;" ]
+      in
+      let payload_err = Yojson.Safe.from_string (text_of r_err) in
+      (match get_in payload_err [ "stopped_on_error" ] with
+       | `Bool true -> ()
+       | _ -> fail "err-mid: stopped_on_error should be true");
+      (match get_in payload_err [ "results" ] with
+       | `List results when List.length results = 2 ->
+           let last = List.nth results 1 in
+           (match get_in last [ "error"; "phase" ] with
+            | `String "typecheck" -> ()
+            | _ -> fail "err-mid: expected typecheck error on second result")
+       | `List l ->
+           Printf.printf "FAIL err-mid: got %d results\n" (List.length l);
+           exit 1
+       | _ -> fail "err-mid: results shape");
+      (* Missing sources -> isError. *)
+      let r_missing =
+        let params =
+          `Assoc
+            [
+              ("name", `String "eval_batch");
+              ("arguments", `Assoc []);
+            ]
+        in
+        Mcp.Rpc.write_message oc (request 22 "tools/call" ~params ());
+        read_response_id ic
+      in
+      (match get_in r_missing [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "missing sources: expected isError true");
+      (* Empty array -> isError. *)
+      let r_empty = call ~id:23 [] in
+      (match get_in r_empty [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "empty sources: expected isError true");
+      (* Non-string element -> isError. *)
+      let r_bad =
+        let params =
+          `Assoc
+            [
+              ("name", `String "eval_batch");
+              ( "arguments",
+                `Assoc [ ("sources", `List [ `String "1;;"; `Int 7 ]) ] );
+            ]
+        in
+        Mcp.Rpc.write_message oc (request 24 "tools/call" ~params ());
+        read_response_id ic
+      in
+      (match get_in r_bad [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "non-string element: expected isError true");
+      ())
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -280,5 +384,6 @@ let () =
   test_initialize_has_instructions ();
   test_unknown_host_errors ();
   test_host_local_aliases ();
+  test_eval_batch ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

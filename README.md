@@ -71,6 +71,7 @@ any project. The skill calls `mcp__topup__*` directly, so the
 | Tool | Effect |
 |------|--------|
 | `eval(source, timeout?)` | Evaluate one or more phrases. Returns `{value_repr, type, stdout, stderr, warnings, error}`. |
+| `eval_batch(sources, timeout?)` | Evaluate a list of sources in one round trip. Returns `{results, stopped_on_error}`; stops on the first failing element. |
 | `env(filter?)` | List current bindings as `[(name, type, location, preview?)]`. |
 | `lookup(name)` | Inspect a single binding. |
 | `reset()` | Discard the toplevel environment. |

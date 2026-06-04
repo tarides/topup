@@ -111,8 +111,8 @@ recurse until stack overflow. Don't remove this guard.
   spawn.
 - The MCP tools are deferred — load schemas via
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
-  The full set is `eval`, `env`, `lookup`, `reset`, `cancel`, `load`,
-  `start_session`, `restart_session`, `update_host`.
+  The full set is `eval`, `eval_batch`, `env`, `lookup`, `reset`,
+  `cancel`, `load`, `start_session`, `restart_session`, `update_host`.
 
 ## Multi-host routing (per-call `host:`)
 
