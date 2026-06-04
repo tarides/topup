@@ -36,17 +36,6 @@ let iso8601_utc_now () =
     tm.Unix.tm_min
     tm.Unix.tm_sec
 
-let ensure_parent_dir path =
-  let dir = Filename.dirname path in
-  let rec mkdir_p d =
-    if d = "/" || d = "." then ()
-    else if Sys.file_exists d then ()
-    else (
-      mkdir_p (Filename.dirname d);
-      (try Unix.mkdir d 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()))
-  in
-  mkdir_p dir
-
 let initialize_request : Yojson.Safe.t =
   `Assoc
     [
@@ -61,34 +50,55 @@ let do_handshake oc ic =
   | Some j -> j
   | None -> failwith "remote: EOF during initialize"
 
+(* Try one connect + handshake. Returns [Ok (sock, ic, oc)] on success;
+   [Error msg] for retryable errors (closed socket along the way);
+   raises for non-retryable errors. *)
+let try_connect_and_handshake ~path =
+  match Proxy.connect_with_retry ~path ~timeout:1.0 with
+  | exception Failure msg -> Error msg
+  | sock ->
+      let ic = Unix.in_channel_of_descr sock in
+      let oc = Unix.out_channel_of_descr sock in
+      (match do_handshake oc ic with
+       | _ -> Ok (sock, ic, oc)
+       | exception (Failure _ | End_of_file | Sys_error _) ->
+           (try Unix.close sock with _ -> ());
+           Error "handshake EOF / channel closed"
+       | exception exn ->
+           (try Unix.close sock with _ -> ());
+           raise exn)
+
 let open_conn ~host ~remote_socket =
   match env_socket_for host with
   | Some path ->
+      (* Test hook: connect to a co-resident `topup --socket` daemon.
+         The remote is fully up, so a single attempt is enough. *)
       let sock = Proxy.connect_with_retry ~path ~timeout:10.0 in
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
       let _ = do_handshake oc ic in
       { ssh = None; sock; ic; oc }
   | None ->
-      ensure_parent_dir remote_socket;
-      let handle =
-        Proxy.spawn_ssh ~host ~remote_socket ()
+      let handle = Proxy.spawn_ssh ~host ~remote_socket () in
+      let deadline = Unix.gettimeofday () +. 20.0 in
+      let rec attempt last_err =
+        if Unix.gettimeofday () >= deadline then (
+          Proxy.kill_ssh handle;
+          failwith
+            (Printf.sprintf
+               "remote %s: timed out waiting for daemon (last: %s)"
+               host last_err))
+        else
+          match try_connect_and_handshake ~path:handle.local_sock with
+          | Ok (sock, ic, oc) -> { ssh = Some handle; sock; ic; oc }
+          | Error msg ->
+              (try Unix.sleepf 0.1 with _ -> ());
+              attempt msg
+          | exception exn ->
+              Proxy.kill_ssh handle;
+              raise exn
       in
-      (match
-         Proxy.connect_with_retry ~path:handle.local_sock ~timeout:20.0
-       with
-       | sock ->
-           let ic = Unix.in_channel_of_descr sock in
-           let oc = Unix.out_channel_of_descr sock in
-           (match do_handshake oc ic with
-            | _ -> { ssh = Some handle; sock; ic; oc }
-            | exception exn ->
-                (try Unix.close sock with _ -> ());
-                Proxy.kill_ssh handle;
-                raise exn)
-       | exception exn ->
-           Proxy.kill_ssh handle;
-           raise exn)
+      attempt "no attempt yet"
 
 let start ~host ?remote_socket () =
   let remote_socket =
