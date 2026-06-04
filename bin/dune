@@ -4,6 +4,7 @@
  (package topup)
  (modes byte_complete)
  (modules main)
+ (link_flags (:standard -linkall))
  (libraries topup_entry topup_eval_byte))
 
 (executable

@@ -93,6 +93,23 @@ eval   { source: "let rec spin n = spin n;;", timeout: 0.3 }
        → error: { phase: "runtime", message: "evaluation timed out" }
 ```
 
+## Troubleshooting `#require`
+
+Two opam/runtime quirks bite when `#require`'ing packages with C stubs.
+
+**`stublibs` path mismatch.** opam stores shared stubs at
+`<opam-root>/<switch>/lib/stublibs`, but the bytecode runtime's
+`ld.conf` (read once at startup) lists `<opam-root>/<switch>/lib/ocaml/stublibs`.
+On a system with no active switch — e.g. `OPAMSWITCH=<switch>` selects
+but doesn't activate — `#require` fails with
+`Cannot load required shared library dllintegers_stubs.so`. Launch
+`topup` through `opam exec --switch=<sw> --` so opam sets the runtime
+env, or append the missing path to `ld.conf`.
+
+**`CAML_LD_LIBRARY_PATH` is parsed once at startup.** Setting it from
+inside a running session (`Unix.putenv ...`) has no effect on later
+`#require` calls. Export it in the shell before launching `topup`.
+
 ## Status
 
 Phase-1 MVP: bytecode toplevel (`topup`) plus an opt-in native
