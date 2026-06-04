@@ -15,6 +15,8 @@ stale or mistyped reference before evaluation.
 
 See [DESIGN.md](DESIGN.md) for the longer rationale, the phase-2 roadmap,
 and how `topup` relates to neighbouring projects.
+For driving toplevels on remote machines (one MCP registration, any
+number of hosts), see [MULTIHOST.md](MULTIHOST.md).
 
 ## Install
 
@@ -92,11 +94,13 @@ eval   { source: "let rec spin n = spin n;;", timeout: 0.3 }
 
 ## Status
 
-Phase-1 MVP: bytecode toplevel, single session, MCP over stdio
-(default) or a Unix domain socket (`topup --socket <path>` — one
-client at a time, state persists across connections). `load`,
-`checkpoint`/`restore`, native-JIT, pooling, and `compile_to_binary`
-are deferred — see DESIGN.md.
+Phase-1 MVP: bytecode toplevel, MCP over stdio (default) or a Unix
+domain socket (`topup --socket <path>` — one client at a time,
+state persists across connections). One MCP registration drives the
+local in-process toplevel plus any number of SSH-tunneled remote
+toplevels, with per-call `host` routing (see
+[MULTIHOST.md](MULTIHOST.md)). `checkpoint`/`restore`, native-JIT,
+pooling, and `compile_to_binary` are deferred — see DESIGN.md.
 
 ## AI usage
 
