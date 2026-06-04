@@ -11,10 +11,17 @@
  (modules socket_client)
  (libraries unix yojson))
 
+(executable
+ (name deaf_socket_server)
+ (modes byte_complete)
+ (modules deaf_socket_server)
+ (libraries unix))
+
 (cram
  (deps
   %{bin:topup}
   %{bin:topup-opt}
   ./socket_client.bc.exe
+  ./deaf_socket_server.bc.exe
   fixtures/topup_load_fixture/topup_load_fixture.cma
   fixtures/topup_load_fixture/topup_load_fixture.cmi))

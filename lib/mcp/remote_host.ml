@@ -50,6 +50,25 @@ let do_handshake oc ic =
   | Some j -> j
   | None -> failwith "remote: EOF during initialize"
 
+(* Read deadline for the handshake response. Without this, a remote
+   that accepts the TCP/UNIX connection but never writes back (e.g. a
+   stale daemon already busy with another client) blocks [input_line]
+   forever and the retry loop in [open_conn] can't make progress. The
+   socket option is cleared after a successful handshake so subsequent
+   send/recv cycles aren't bounded. *)
+let handshake_read_timeout = 2.0
+
+let do_handshake_bounded sock oc ic =
+  (try Unix.setsockopt_float sock Unix.SO_RCVTIMEO handshake_read_timeout
+   with Unix.Unix_error _ -> ());
+  let clear () =
+    try Unix.setsockopt_float sock Unix.SO_RCVTIMEO 0.0
+    with Unix.Unix_error _ -> ()
+  in
+  match do_handshake oc ic with
+  | j -> clear (); j
+  | exception exn -> clear (); raise exn
+
 (* Try one connect + handshake. Returns [Ok (sock, ic, oc)] on success;
    [Error msg] for retryable errors (closed socket along the way);
    raises for non-retryable errors. *)
@@ -59,25 +78,26 @@ let try_connect_and_handshake ~path =
   | sock ->
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
-      (match do_handshake oc ic with
+      (match do_handshake_bounded sock oc ic with
        | _ -> Ok (sock, ic, oc)
        | exception (Failure _ | End_of_file | Sys_error _) ->
            (try Unix.close sock with _ -> ());
            Error "handshake EOF / channel closed"
+       | exception (Unix.Unix_error _ | Sys_blocked_io) ->
+           (try Unix.close sock with _ -> ());
+           Error "handshake timed out"
        | exception exn ->
            (try Unix.close sock with _ -> ());
            raise exn)
 
 let open_conn ~host ~remote_socket =
   match env_socket_for host with
-  | Some path ->
+  | Some path -> (
       (* Test hook: connect to a co-resident `topup --socket` daemon.
          The remote is fully up, so a single attempt is enough. *)
-      let sock = Proxy.connect_with_retry ~path ~timeout:10.0 in
-      let ic = Unix.in_channel_of_descr sock in
-      let oc = Unix.out_channel_of_descr sock in
-      let _ = do_handshake oc ic in
-      { ssh = None; sock; ic; oc }
+      match try_connect_and_handshake ~path with
+      | Ok (sock, ic, oc) -> { ssh = None; sock; ic; oc }
+      | Error msg -> failwith ("remote " ^ host ^ ": " ^ msg))
   | None ->
       let handle = Proxy.spawn_ssh ~host ~remote_socket () in
       let deadline = Unix.gettimeofday () +. 20.0 in
