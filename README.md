@@ -97,3 +97,10 @@ Phase-1 MVP: bytecode toplevel, single session, MCP over stdio
 client at a time, state persists across connections). `load`,
 `checkpoint`/`restore`, native-JIT, pooling, and `compile_to_binary`
 are deferred — see DESIGN.md.
+
+## AI usage
+
+`topup` is developed in close collaboration with Anthropic's Claude.
+See [AI_USAGE.md](AI_USAGE.md) for scope, provenance, and what that
+means for downstream users and contributors. The deployed binary has
+no runtime LLM dependency.
