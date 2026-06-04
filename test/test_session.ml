@@ -256,4 +256,21 @@ let () =
        Printf.printf "FAIL #install_printer: got %s\n"
          (Option.value ~default:"<none>" r.value_repr);
        exit 1);
+  let t0 = Unix.gettimeofday () in
+  let r_bg =
+    Session.eval s_logged
+      {|let _ : int Domain.t =
+          Domain.spawn (fun () ->
+            while true do () done; 0)
+        in
+        "spawned";;|}
+  in
+  let elapsed = Unix.gettimeofday () -. t0 in
+  (match r_bg.value_repr with
+   | Some "\"spawned\"" when elapsed < 0.5 -> ()
+   | _ ->
+       Printf.printf
+         "FAIL background fibre extended eval: elapsed=%.3f repr=%s\n"
+         elapsed (Option.value ~default:"<none>" r_bg.value_repr);
+       exit 1);
   print_endline "test_session: ok"

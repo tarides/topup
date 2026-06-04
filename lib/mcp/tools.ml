@@ -38,10 +38,16 @@ let descriptors : Yojson.Safe.t list =
     tool_def ~name:"eval"
       ~description:
         "Evaluate one or more OCaml phrases in the persistent toplevel \
-         session. Oversized value_repr/stdout/stderr are truncated inline \
-         with a '…[+N bytes; full at <path>]' marker; the full content is \
-         written to the path advertised in the matching '*_overflow' field. \
-         Read that path if the full content is needed."
+         session. eval returns as soon as the top-level expression returns; \
+         background activity (Lwt/Eio fibres, Thread.create, Domain.spawn) \
+         is the caller's responsibility — it keeps running, is NOT killed \
+         by reset, and its later writes to stdout/stderr may land in a \
+         subsequent eval's capture or on the server's real stdout. If you \
+         need a fibre's result, join/await it before the top-level \
+         expression returns. Oversized value_repr/stdout/stderr are \
+         truncated inline with a '…[+N bytes; full at <path>]' marker; the \
+         full content is written to the path advertised in the matching \
+         '*_overflow' field. Read that path if the full content is needed."
       ~schema:eval_schema;
     tool_def ~name:"env"
       ~description:

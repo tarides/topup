@@ -3,6 +3,40 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — Idle-detection contract for background fibres
+
+Closed the top backlog item and one of DESIGN.md's "Must answer
+before phase-1 ships" open questions. The contract `eval` already
+implements is now written down where an LLM will see it.
+
+Decision: `eval` returns as soon as the top-level expression
+returns. Background activity (`Lwt`/`Eio` fibres, `Thread.create`,
+`Domain.spawn`) is the caller's responsibility — it keeps running,
+is **not** killed by `reset`, and its later writes to stdout/stderr
+may land in a subsequent `eval`'s capture or on the server's real
+stdout. Only process exit reliably clears it. OCaml exposes no
+thread-kill primitive, so true teardown waits on a future
+process-isolated session story.
+
+- `lib/mcp/tools.ml` — extended the `eval` tool description with
+  the contract verbatim. This is the LLM-visible surface, so it
+  reads as a direct instruction ("If you need a fibre's result,
+  join/await it before the top-level expression returns").
+- `DESIGN.md` — converted the "Default contract …" hedge under
+  "Must answer before phase-1 ships" into a recorded decision with
+  the carve-out about `reset` not killing fibres.
+- `test/test_session.ml` — appended a `Domain.spawn` stanza that
+  spawns a domain running `while true do () done` from inside
+  `eval` and asserts the eval returns in under 0.5 s. The domain
+  leaks intentionally; the runtime tears it down on process exit.
+  Placed last in the file because a still-running domain could
+  pollute a later test's stdout capture — which is precisely the
+  footgun the new docs warn about.
+
+`dune runtest --force` green across `test_session`, `test_mcp`, and
+the cram fixtures. Smoke-tested the description shape end-to-end by
+piping `initialize` + `tools/list` through the binary.
+
 ## 2026-06-04 — Expand cram coverage for the socket transport
 
 Follow-up to the socket-transport entry below. The original

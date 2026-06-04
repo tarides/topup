@@ -5,16 +5,6 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## Idle-detection contract for background fibres
-
-When does `eval` finish if the phrase spawns Lwt/Eio fibres? Default
-contract should be: `eval` returns when the top-level expression
-returns; background fibres are the user's problem and die at `reset`.
-Decide, document loudly in `eval`'s tool description, and add a test
-that confirms a phrase spawning an Lwt fibre does not extend `eval`.
-
-DESIGN.md, "Must answer before phase-1 ships".
-
 ## LLM-in-the-loop smoke tests
 
 Unit tests on `Session` and the in-process MCP integration exist.
