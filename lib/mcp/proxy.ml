@@ -78,6 +78,12 @@ type ssh_handle = {
   ssh_pid : int;
   local_sock : string;
   remote_sock : string;
+  stdin_write : Unix.file_descr;
+      (** Held by the parent for the lifetime of the tunnel.
+          Closing it (via {!kill_ssh} or on parent exit) sends EOF
+          along ssh's stdin → the remote `cat` wrapper exits → the
+          remote `topup --socket` daemon gets SIGTERM and unlinks
+          its socket. *)
 }
 
 let spawn_ssh ~host ?remote_socket () =
@@ -87,9 +93,18 @@ let spawn_ssh ~host ?remote_socket () =
   in
   let local_sock = local_socket () in
   let dev_null = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0o600 in
+  let stdin_read, stdin_write = Unix.pipe ~cloexec:true () in
   let remote_dir = Filename.dirname remote_sock in
+  (* Heartbeat-pipe wrapper. The remote shell launches `topup --socket`
+     in the background and blocks on `cat` reading from the channel's
+     stdin. When the local side closes [stdin_write] (or this process
+     exits), `cat` reads EOF, the EXIT trap fires and SIGTERMs the
+     daemon, which runs its at_exit and unlinks the socket file. *)
   let remote_cmd =
-    Printf.sprintf "mkdir -p %s && exec topup --socket %s"
+    Printf.sprintf
+      "mkdir -p %s && topup --socket %s & PID=$!; \
+       trap 'kill -TERM $PID 2>/dev/null; wait $PID 2>/dev/null' EXIT; \
+       cat >/dev/null"
       (Filename.quote remote_dir) (Filename.quote remote_sock)
   in
   let argv =
@@ -103,12 +118,14 @@ let spawn_ssh ~host ?remote_socket () =
     |]
   in
   let ssh_pid =
-    Unix.create_process "ssh" argv dev_null dev_null Unix.stderr
+    Unix.create_process "ssh" argv stdin_read dev_null Unix.stderr
   in
+  (try Unix.close stdin_read with _ -> ());
   (try Unix.close dev_null with _ -> ());
-  { ssh_pid; local_sock; remote_sock }
+  { ssh_pid; local_sock; remote_sock; stdin_write }
 
 let kill_ssh handle =
+  (try Unix.close handle.stdin_write with _ -> ());
   (try Unix.kill handle.ssh_pid Sys.sigterm with _ -> ());
   (try Unix.unlink handle.local_sock with _ -> ())
 

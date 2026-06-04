@@ -18,14 +18,21 @@ type ssh_handle = {
   ssh_pid : int;
   local_sock : string;
   remote_sock : string;
+  stdin_write : Unix.file_descr;
+      (** Heartbeat pipe held by the parent. Closing it (via
+          {!kill_ssh} or on parent exit) signals the remote-side
+          [cat] wrapper, which then SIGTERMs the remote daemon so
+          its socket file is unlinked. *)
 }
 
 (** Spawn an SSH child that forwards a Unix socket from [host]'s
-    [remote_sock] back to a randomly-chosen local Unix socket, and runs
-    [topup --socket <remote_sock>] on the remote side. [remote_socket]
-    pins the remote path (default is randomized in [/tmp]). Does NOT
-    install any signal handlers or [at_exit] hooks — the caller owns
-    cleanup via {!kill_ssh}. *)
+    [remote_sock] back to a randomly-chosen local Unix socket, and
+    runs a wrapper script on the remote side that launches
+    [topup --socket <remote_sock>] in the background and watches a
+    stdin-EOF heartbeat. [remote_socket] pins the remote path
+    (default is randomized in [/tmp]). Does NOT install any signal
+    handlers or [at_exit] hooks — the caller owns cleanup via
+    {!kill_ssh}. *)
 val spawn_ssh : host:string -> ?remote_socket:string -> unit -> ssh_handle
 
 (** Kill the SSH child and unlink the local socket. Idempotent. *)
