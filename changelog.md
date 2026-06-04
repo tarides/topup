@@ -3,6 +3,49 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — Server-crash-on-malformed-input fix
+
+Closed the top backlog item, opened earlier the same day by the
+first smoke-test replay. The duplicated-`let` paste that exited the
+binary in Beat 1 now returns a structured `typecheck: Syntax error`
+with location; the session stays alive for the next request.
+
+Root cause: `Session.eval` only handled `End_of_file` from
+`Toploop.parse_toplevel_phrase`. A `Syntaxerr.Error _` (or
+`Lexer.Error _`) escaped the surrounding try/with — which only
+wrapped `Toploop.execute_phrase` — and propagated through
+`Capture.with_capture`, `Tools.dispatch`, `Server.handle_request`
+and the `Server.run` loop, all unprotected. In stdio mode
+(`bin/main.ml`) there is no outer catch, so the exception killed
+the process.
+
+- `lib/topup/session.ml` — extend the parse-time `try/with` to
+  catch any exception (not just `End_of_file`) and route it through
+  `Error.of_exn`, parallel to how typecheck and runtime errors were
+  already handled. `Location.error_of_exn` recognises the
+  parser/lexer exceptions and produces a `Typecheck`-phase error
+  with location — no change to `error.ml` was needed.
+- `lib/mcp/tools.ml` — wrap the `dispatch` body in a single
+  defensive `try/with` so any future uncaught tool exception
+  becomes `text_result ~is_error:true` instead of a process exit.
+  Stops being load-bearing the moment fix above lands; cheap
+  insurance against the next bug of the same shape.
+- `test/test_session.ml` — appended a regression stanza using the
+  verbatim Beat-1 input from `replay_2026-06-04.md` and asserting
+  (a) a `Typecheck`-phase error comes back and (b) a subsequent
+  `eval` on the same session still works.
+- `test/smoke/replay_2026-06-04_post_fix.md` — second smoke-test
+  run, same day, against the freshly reinstalled patched binary;
+  the crash repro is now a clean structured error and Beats 2/3/4
+  pass. Beat 2 was probed with three free-form questions instead
+  of the scripted single one; the externalized-memory thesis held
+  for all three.
+- `backlog.md` — closed entry removed.
+
+`dune build @all` and `dune runtest --force` green; stdio repro
+against the patched binary returns `phase: typecheck`, location
+present, follow-up `eval` succeeds.
+
 ## 2026-06-04 — LLM-in-the-loop smoke test
 
 Closed the top backlog item. Phase-1's "operational" end-to-end

@@ -154,7 +154,11 @@ let eval ?timeout t source =
       while true do
         let phrase =
           try !Toploop.parse_toplevel_phrase lexbuf
-          with End_of_file -> raise Stop
+          with
+          | End_of_file -> raise Stop
+          | exn ->
+              error := Some (Error.of_exn exn);
+              raise Stop
         in
         last_outcome := None;
         (try

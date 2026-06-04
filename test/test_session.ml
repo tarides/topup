@@ -61,6 +61,35 @@ let () =
    | _ ->
        print_endline "FAIL runtime error not surfaced";
        exit 1);
+  (* Malformed source returns a structured error; session stays usable.
+     Repro from test/smoke/replay_2026-06-04.md, Beat 1. *)
+  let bad =
+    "let primes = let primes =\n\
+    \  let rec sieve s () = match s () with\n\
+    \    | Seq.Nil -> Seq.Nil\n\
+    \    | Seq.Cons (p, rest) ->\n\
+    \        Seq.Cons (p, sieve (Seq.filter (fun n -> n mod p <> 0) rest))\n\
+    \  in\n\
+    \  sieve (Seq.ints 2) |> Seq.take 1000 |> List.of_seq\n\
+    ;;"
+  in
+  let r_bad = Session.eval s bad in
+  (match r_bad.error with
+   | Some { phase = Typecheck; message; _ } when String.length message > 0 ->
+       ()
+   | Some { phase; message; _ } ->
+       Printf.printf "FAIL malformed input: phase=%s msg=%s\n%!"
+         (match phase with
+          | Topup.Error.Typecheck -> "typecheck"
+          | Runtime -> "runtime")
+         message;
+       exit 1
+   | None ->
+       print_endline "FAIL malformed input: expected error, got none";
+       exit 1);
+  let r_after_bad = Session.eval s "let recovery = 42;;" in
+  check "session usable after parse error" "42"
+    (Option.value ~default:"<none>" r_after_bad.value_repr);
   let _ = Session.eval s "let alpha = 7;;" in
   let _ = Session.eval s "let beta = \"b\";;" in
   let bindings = Session.env s in

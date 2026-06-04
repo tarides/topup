@@ -156,33 +156,37 @@ let get_bool args key =
   match get_field args key with Some (`Bool b) -> Some b | _ -> None
 
 let dispatch session name (args : Yojson.Safe.t) : Yojson.Safe.t =
-  match name with
-  | "eval" -> (
-      match get_string args "source" with
-      | None -> text_result ~is_error:true "missing 'source' argument"
-      | Some source ->
-          let timeout = get_float args "timeout" in
-          let r = Session.eval ?timeout session source in
-          json_result (json_of_eval_result r))
-  | "env" ->
-      let filter = get_string args "filter" in
-      let all = get_bool args "all" in
-      let bs = Session.env ?filter ?all session in
-      json_result (`List (List.map json_of_binding bs))
-  | "lookup" -> (
-      match get_string args "name" with
-      | None -> text_result ~is_error:true "missing 'name' argument"
-      | Some n ->
-          let r =
-            match Session.lookup session n with
-            | None -> `Null
-            | Some b -> json_of_binding b
-          in
-          json_result r)
-  | "reset" ->
-      Session.reset session;
-      text_result "ok"
-  | "cancel" ->
-      Session.cancel session;
-      text_result "ok"
-  | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
+  try
+    match name with
+    | "eval" -> (
+        match get_string args "source" with
+        | None -> text_result ~is_error:true "missing 'source' argument"
+        | Some source ->
+            let timeout = get_float args "timeout" in
+            let r = Session.eval ?timeout session source in
+            json_result (json_of_eval_result r))
+    | "env" ->
+        let filter = get_string args "filter" in
+        let all = get_bool args "all" in
+        let bs = Session.env ?filter ?all session in
+        json_result (`List (List.map json_of_binding bs))
+    | "lookup" -> (
+        match get_string args "name" with
+        | None -> text_result ~is_error:true "missing 'name' argument"
+        | Some n ->
+            let r =
+              match Session.lookup session n with
+              | None -> `Null
+              | Some b -> json_of_binding b
+            in
+            json_result r)
+    | "reset" ->
+        Session.reset session;
+        text_result "ok"
+    | "cancel" ->
+        Session.cancel session;
+        text_result "ok"
+    | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
+  with exn ->
+    text_result ~is_error:true
+      ("internal error in " ^ name ^ ": " ^ Printexc.to_string exn)
