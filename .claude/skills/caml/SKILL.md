@@ -6,9 +6,29 @@ description: Evaluate OCaml in the persistent topup toplevel, or call one of the
 The user invoked `/caml <args>`. Parse `<args>` and dispatch to the
 matching topup MCP tool.
 
+## `--host=<name>` per-call override
+
+Before directive detection, scan the leading tokens for `--host=<name>`
+(no surrounding spaces around `=`). If present, strip it from
+`<args>` and forward `<name>` as the `host` parameter on every
+underlying tool call (`eval`, `env`, `lookup`, `reset`, `cancel`,
+`load`). The name `local` (or omitting `--host=` entirely) routes to
+the in-process toplevel; anything else routes to a remote previously
+brought up via `mcp__topup__start_session`.
+
+There is no sticky default: bare `/caml <src>` always hits the local
+toplevel. To address a remote on every call, pass `--host=<name>`
+each time.
+
+If `<name>` does not match a host that has been started this server
+lifetime, the call returns `isError: true` with a message asking the
+user to call `start_session` first. Surface the error verbatim; do
+not auto-call `start_session`.
+
 ## Directive parsing
 
-Strip leading whitespace from `<args>`. Then look at the first token.
+Strip leading whitespace from `<args>` (after the `--host=` strip
+above). Then look at the first token.
 
 | First token | Action | Tool | Arguments |
 |-------------|--------|------|-----------|
@@ -71,7 +91,10 @@ For every tool, keep the response terse — the user is at a REPL.
 - Do not editorialise the OCaml. Pass user source through unchanged
   except for the `;;` terminator and timeout extraction.
 - Do not call other tools (Bash, Read, Edit, etc.) — this skill is a
-  thin wrapper around the five `mcp__topup__*` tools.
+  thin wrapper around the `mcp__topup__*` tools.
 - If the topup MCP server is not connected, say so and tell the user
   to run `/mcp` → Reconnect, or
   `claude mcp add topup <path>/_build/default/bin/main.bc.exe`.
+- Do not auto-issue `start_session` on the user's behalf. If a
+  `--host=` call fails because the host is not registered, surface
+  the server's error so the user makes the explicit call.

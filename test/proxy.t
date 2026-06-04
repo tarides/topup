@@ -16,8 +16,9 @@ A single `initialize` exchange end-to-end: proxy connects to the
 daemon, forwards the request, returns the response.
 
   $ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
-  >   | topup --proxy "$PWD/server.sock"
-  {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"topup","version":"0.1.0"}}}
+  >   | topup --proxy "$PWD/server.sock" \
+  >   | grep -o '"serverInfo":{"name":"topup","version":"0.1.0"}'
+  "serverInfo":{"name":"topup","version":"0.1.0"}
 
 State persists across separate proxy invocations: bind `x` in one,
 read it back in another. The bridge is a transient byte pump; the

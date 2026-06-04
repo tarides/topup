@@ -30,9 +30,10 @@ let with_server f =
   let cs_ic, cs_oc = pipe_pair () in
   let sc_ic, sc_oc = pipe_pair () in
   let session = Topup.Session.create () in
+  let registry = Mcp.Host_registry.create () in
   let t =
     Thread.create
-      (fun () -> Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session)
+      (fun () -> Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ())
       ()
   in
   let result = f sc_ic cs_oc in
@@ -81,7 +82,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 6 -> ()
+       | `List tools when List.length tools = 9 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
@@ -190,13 +191,94 @@ let test_initialize_list_call () =
        | _ -> fail "load bad path: malformed payload");
       ())
 
+let contains haystack needle =
+  let nh = String.length haystack in
+  let nn = String.length needle in
+  if nn = 0 then true
+  else
+    let last = nh - nn in
+    let rec loop i =
+      if i > last then false
+      else if String.sub haystack i nn = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+
+let test_initialize_has_instructions () =
+  with_server (fun ic oc ->
+      Mcp.Rpc.write_message oc (request 1 "initialize" ());
+      let r = read_response_id ic in
+      match get_in r [ "result"; "instructions" ] with
+      | `String s when String.length s > 0 && contains s "local" -> ()
+      | _ -> fail "initialize result missing instructions or 'local' marker")
+
+let test_unknown_host_errors () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ( "arguments",
+              `Assoc
+                [
+                  ("host", `String "no-such-host");
+                  ("source", `String "1+1;;");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 9 "tools/call" ~params ());
+      let r = read_response_id ic in
+      match get_in r [ "result"; "isError" ] with
+      | `Bool true -> ()
+      | _ -> fail "expected isError true for unknown host")
+
+let test_host_local_aliases () =
+  with_server (fun ic oc ->
+      let bind =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ( "arguments",
+              `Assoc
+                [
+                  ("host", `String "local");
+                  ("source", `String "let lh = 7 * 7;;");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 10 "tools/call" ~params:bind ());
+      let _ = read_response_id ic in
+      let read_back =
+        `Assoc
+          [ ("name", `String "eval");
+            ("arguments", `Assoc [ ("source", `String "lh;;") ]) ]
+      in
+      Mcp.Rpc.write_message oc (request 11 "tools/call" ~params:read_back ());
+      let r = read_response_id ic in
+      let text =
+        match get_in r [ "result"; "content" ] with
+        | `List [ `Assoc fs ] -> (
+            match List.assoc_opt "text" fs with
+            | Some (`String s) -> s
+            | _ -> fail "no text")
+        | _ -> fail "shape"
+      in
+      let payload = Yojson.Safe.from_string text in
+      match get_in payload [ "value_repr" ] with
+      | `String "49" -> ()
+      | _ -> fail "host:local did not share state with host omitted")
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
       (Printf.sprintf "topup-mcp-test-spill-%d" (Unix.getpid ()))
   in
   Unix.putenv "TOPUP_SPILL_DIR" spill_dir;
+  Unix.putenv "TOPUP_HOSTS_FILE" "off";
   test_rpc_roundtrip ();
   test_initialize_list_call ();
+  test_initialize_has_instructions ();
+  test_unknown_host_errors ();
+  test_host_local_aliases ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

@@ -17,7 +17,7 @@ let json_error ?(code = -32603) ?(message = "Internal error") id : Yojson.Safe.t
         `Assoc [ ("code", `Int code); ("message", `String message) ] );
     ]
 
-let initialize_result : Yojson.Safe.t =
+let initialize_result registry : Yojson.Safe.t =
   `Assoc
     [
       ("protocolVersion", `String protocol_version);
@@ -26,11 +26,24 @@ let initialize_result : Yojson.Safe.t =
         `Assoc
           [ ("name", `String server_name); ("version", `String server_version) ]
       );
+      ("instructions", `String (Host_registry.instructions_text registry));
     ]
 
-let handle_request session ~id ~meth ~params : Yojson.Safe.t =
+let inject_default_host ~default_host (args : Yojson.Safe.t) : Yojson.Safe.t =
+  match default_host with
+  | None -> args
+  | Some host -> (
+      match args with
+      | `Assoc fields ->
+          let has_host = List.exists (fun (k, _) -> k = "host") fields in
+          if has_host then args
+          else `Assoc (("host", `String host) :: fields)
+      | _ -> `Assoc [ ("host", `String host) ])
+
+let handle_request ~session ~registry ~default_host ~id ~meth ~params :
+    Yojson.Safe.t =
   match meth with
-  | "initialize" -> json_result id initialize_result
+  | "initialize" -> json_result id (initialize_result registry)
   | "tools/list" ->
       json_result id (`Assoc [ ("tools", `List Tools.descriptors) ])
   | "tools/call" -> (
@@ -48,16 +61,47 @@ let handle_request session ~id ~meth ~params : Yojson.Safe.t =
           in
           if name = "" then
             json_error ~code:(-32602) ~message:"missing tool name" id
-          else json_result id (Tools.dispatch session name args)
+          else
+            let args =
+              match name with
+              | "start_session" | "restart_session" | "update_host" -> args
+              | _ -> inject_default_host ~default_host args
+            in
+            json_result id (Tools.dispatch session registry name args)
       | _ -> json_error ~code:(-32602) ~message:"invalid params" id)
   | _ -> json_error ~code:(-32601) ~message:("method not found: " ^ meth) id
 
-let handle_notification session ~meth ~params:_ =
+let handle_notification ~session ~registry ~default_host ~meth ~params =
   match meth with
-  | "notifications/cancelled" -> Topup.Session.cancel session
+  | "notifications/cancelled" ->
+      let host =
+        match params with
+        | `Assoc fields -> (
+            match List.assoc_opt "host" fields with
+            | Some (`String "") | Some (`String "local") | None ->
+                default_host
+            | Some (`String h) -> Some h
+            | _ -> default_host)
+        | _ -> default_host
+      in
+      (match host with
+       | None -> Topup.Session.cancel session
+       | Some host -> (
+           match Host_registry.live registry host with
+           | None -> ()
+           | Some rh ->
+               let msg : Yojson.Safe.t =
+                 `Assoc
+                   [
+                     ("jsonrpc", `String "2.0");
+                     ("method", `String "notifications/cancelled");
+                     ("params", `Assoc []);
+                   ]
+               in
+               Remote_host.notify rh msg))
   | _ -> ()
 
-let run ~ic ~oc ~session =
+let run ~ic ~oc ~session ~registry ?default_host () =
   let rec loop () =
     match Rpc.read_message ic with
     | None -> ()
@@ -75,8 +119,12 @@ let run ~ic ~oc ~session =
         let id_opt = List.assoc_opt "id" fields in
         (match (meth_opt, id_opt) with
         | Some m, Some id ->
-            Rpc.write_message oc (handle_request session ~id ~meth:m ~params)
-        | Some m, None -> handle_notification session ~meth:m ~params
+            Rpc.write_message oc
+              (handle_request ~session ~registry ~default_host ~id ~meth:m
+                 ~params)
+        | Some m, None ->
+            handle_notification ~session ~registry ~default_host ~meth:m
+              ~params
         | None, _ -> ());
         loop ()
     | Some _ -> loop ()
@@ -107,7 +155,7 @@ let prepare_socket_path path =
       (try Unix.unlink path
        with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
 
-let serve_unix ~path ~session =
+let serve_unix ~path ~session ~registry ?default_host () =
   prepare_socket_path path;
   let server = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
   Unix.bind server (Unix.ADDR_UNIX path);
@@ -122,7 +170,7 @@ let serve_unix ~path ~session =
     let client, _ = Unix.accept server in
     let ic = Unix.in_channel_of_descr client in
     let oc = Unix.out_channel_of_descr client in
-    (try run ~ic ~oc ~session with _ -> ());
+    (try run ~ic ~oc ~session ~registry ?default_host () with _ -> ());
     (try close_in ic with _ -> ());
     (try close_out oc with _ -> ())
   done

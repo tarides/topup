@@ -27,6 +27,8 @@ lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio or Unix
               socket: Rpc, Server (run + serve_unix), Tools
               + Proxy (stdio↔socket bridge, SSH wrapper for remote
               execution)
+              + Host_registry / Remote_host (per-host SSH tunnels
+              and JSON-RPC fan-out for `host:`-routed tool calls)
 bin/main.ml   wires Session + Server to stdin/stdout (default) or
               to a Unix socket via `--socket <path>`; or runs as a
               bridge via `--proxy <path>` / `--remote <host>`;
@@ -107,10 +109,52 @@ recurse until stack overflow. Don't remove this guard.
   restarted (`/quit` then re-launch). This caught us repeatedly — every
   reinstall during a session was being tested against the previous
   spawn.
-- The five MCP tools are deferred — load schemas via
+- The MCP tools are deferred — load schemas via
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
+  The full set is `eval`, `env`, `lookup`, `reset`, `cancel`, `load`,
+  `start_session`, `restart_session`, `update_host`.
 
-## Remote execution
+## Multi-host routing (per-call `host:`)
+
+Every tool that takes session state (`eval`, `env`, `lookup`, `load`,
+`reset`, `cancel`) accepts an optional `host: string`. Omit (or pass
+`"local"`/`""`) to hit the in-process Toploop; pass any other name
+to route the call to a remote `topup --socket` daemon over an
+SSH-forwarded Unix socket.
+
+Lifecycle is explicit:
+
+- `start_session { host }` — opens the SSH tunnel
+  (`ssh -L <local>:<remote> <host> topup --socket <remote>`),
+  performs the MCP `initialize` handshake, and registers the host.
+  Idempotent on a live tunnel. Remote socket defaults to
+  `~/.topup/sockets/topup.sock` on the remote side; pin it with
+  `remote_socket: "<path>"`.
+- `restart_session { host }` — kills the tunnel and re-spawns. Use
+  when wedged; for a fresh OCaml environment use `reset` instead.
+- `update_host { host, description?, os? }` — set/replace metadata
+  surfaced in the `initialize` response's `instructions` block.
+
+The `instructions` block, rebuilt on every `initialize`, enumerates
+known hosts so a freshly-connected client sees what is registered
+without re-querying.
+
+The registry persists to `~/.topup/hosts.json` (override with
+`TOPUP_HOSTS_FILE=<path>`; `=off` disables persistence). Live SSH
+state is never written to disk — restarted servers come up with no
+tunnels and require fresh `start_session` calls.
+
+Concurrency is deliberately tight: the MCP server processes one
+`tools/call` at a time; per-host serialisation is implicit. Parallel
+fan-out to distinct hosts is a separate backlog item ("Multi-connection
+socket transport with serialized dispatch").
+
+Test hook for cram fixtures: setting
+`TOPUP_HOST_SOCKET_<HOST>=/path/to/sock` (with `<HOST>`
+uppercased) makes `start_session { host: "<host>" }` skip the SSH
+spawn and connect to the named local socket directly. Test-only.
+
+## Remote execution (single-host shortcut)
 
 Two flags layer to put the toplevel on another host:
 
@@ -120,17 +164,16 @@ Two flags layer to put the toplevel on another host:
   rides out the case where the peer hasn't bound the path yet. No
   JSON parsing: framing is the wire's responsibility.
 
-- `topup --remote <host> [--remote-socket <path>]` — convenience
-  wrapper around `--proxy`. Spawns
-  `ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-       -L <local.sock>:<remote.sock> <host> \
-       topup --socket <remote.sock>`
-  as a child, then drives the proxy against the local end of the
-  forward. `<local.sock>` is randomized in `/tmp`; `<remote.sock>`
-  defaults to `/tmp/topup-<random>.sock`. Pin `--remote-socket` if
-  you want reconnects to land on the same session. `at_exit` kills
-  the SSH child and unlinks the local socket; SIGTERM/SIGINT
-  handlers call `exit 0` so the cleanup fires under shell
+- `topup --remote <host> [--remote-socket <path>]` — pre-registers
+  `<host>` and sets it as the `default_host` of an in-process MCP
+  server on stdio. A client sending `eval` with no `host:` gets
+  evaluation on `<host>`; an explicit `host: "local"` still escapes
+  to the in-process Toploop. Under the hood this calls
+  `Host_registry.start_session`, which uses the same SSH-spawn helper
+  (`Proxy.spawn_ssh`) as `start_session` from a live server.
+  `<remote.sock>` defaults to `~/.topup/sockets/topup.sock` on the
+  remote host; pin a different path with `--remote-socket`. `at_exit`
+  closes all live tunnels; SIGTERM/SIGINT handlers fire under shell
   termination.
 
 The remote side is the same `topup --socket` binary — no special
