@@ -20,6 +20,7 @@ let string_prop = `Assoc [ ("type", `String "string") ]
 let number_prop = `Assoc [ ("type", `String "number") ]
 let bool_prop = `Assoc [ ("type", `String "boolean") ]
 let host_prop = string_prop
+let session_prop = string_prop
 
 let array_string_prop : Yojson.Safe.t =
   `Assoc
@@ -34,6 +35,7 @@ let eval_schema =
       ("source", string_prop);
       ("timeout", number_prop);
       ("host", host_prop);
+      ("session", session_prop);
     ]
 
 let eval_batch_schema =
@@ -42,27 +44,44 @@ let eval_batch_schema =
       ("sources", array_string_prop);
       ("timeout", number_prop);
       ("host", host_prop);
+      ("session", session_prop);
     ]
 
 let env_schema =
   object_schema
     [
-      ("filter", string_prop); ("all", bool_prop); ("host", host_prop);
+      ("filter", string_prop);
+      ("all", bool_prop);
+      ("host", host_prop);
+      ("session", session_prop);
     ]
 
 let lookup_schema =
   object_schema ~required:[ "name" ]
-    [ ("name", string_prop); ("host", host_prop) ]
+    [
+      ("name", string_prop);
+      ("host", host_prop);
+      ("session", session_prop);
+    ]
 
 let load_schema =
   object_schema ~required:[ "path" ]
-    [ ("path", string_prop); ("host", host_prop) ]
+    [
+      ("path", string_prop);
+      ("host", host_prop);
+      ("session", session_prop);
+    ]
 
-let host_only_schema = object_schema [ ("host", host_prop) ]
+let host_or_session_schema =
+  object_schema [ ("host", host_prop); ("session", session_prop) ]
 
 let checkpoint_schema =
   object_schema ~required:[ "label" ]
-    [ ("label", string_prop); ("host", host_prop) ]
+    [
+      ("label", string_prop);
+      ("host", host_prop);
+      ("session", session_prop);
+    ]
 
 let restore_schema = checkpoint_schema
 
@@ -81,6 +100,25 @@ let update_host_schema =
       ("os", string_prop);
     ]
 
+let start_local_session_schema =
+  object_schema ~required:[ "session" ]
+    [
+      ("session", session_prop);
+      ("prewarm", string_prop);
+      ("pool", number_prop);
+    ]
+
+let restart_local_session_schema =
+  object_schema ~required:[ "session" ] [ ("session", session_prop) ]
+
+let update_local_session_schema =
+  object_schema ~required:[ "session" ]
+    [
+      ("session", session_prop);
+      ("prewarm", string_prop);
+      ("pool", number_prop);
+    ]
+
 let descriptors : Yojson.Safe.t list =
   [
     tool_def ~name:"eval"
@@ -97,8 +135,10 @@ let descriptors : Yojson.Safe.t list =
          full content is written to the path advertised in the matching \
          '*_overflow' field. Read that path if the full content is needed. \
          Optional `host` routes the call to a remote toplevel previously \
-         brought up via start_session; omit it (or pass \"local\") for the \
-         in-process session."
+         brought up via start_session; optional `session` routes to a \
+         named local subprocess brought up via start_local_session. \
+         Pass at most one — they are mutually exclusive. Omit both \
+         (or pass \"local\") for the in-process session."
       ~schema:eval_schema;
     tool_def ~name:"eval_batch"
       ~description:
@@ -130,13 +170,13 @@ let descriptors : Yojson.Safe.t list =
       ~description:
         "Discard the toplevel environment and start fresh. Optional `host` \
          selects a remote session."
-      ~schema:host_only_schema;
+      ~schema:host_or_session_schema;
     tool_def ~name:"cancel"
       ~description:
         "Interrupt the currently-running evaluation. Optional `host` \
          selects a remote session; bare `cancel` cancels the local session \
          only (does NOT broadcast across hosts)."
-      ~schema:host_only_schema;
+      ~schema:host_or_session_schema;
     tool_def ~name:"load"
       ~description:
         "Dynlink a bytecode archive (.cma) or object file (.cmo) into the \
@@ -207,6 +247,35 @@ let descriptors : Yojson.Safe.t list =
          only the fields you want to change; omitted fields are left \
          untouched."
       ~schema:update_host_schema;
+    tool_def ~name:"start_local_session"
+      ~description:
+        "Bring up a named local topup session as a subprocess and \
+         optionally pre-warm it. Forks `topup --socket <path>` and \
+         performs the MCP `initialize` handshake. If `prewarm` is \
+         given, evaluates `#use <prewarm>;;` in the subprocess before \
+         returning — a failing prewarm kills the subprocess and \
+         surfaces the error. When `pool` > 1, also spawns siblings \
+         named `<session>.1` … `<session>.(pool-1)` sharing the same \
+         prewarm; replicas exist so `restore` against a sibling \
+         branches off the primary without paying cold-load cost. \
+         Idempotent: a second call against a live session is a no-op."
+      ~schema:start_local_session_schema;
+    tool_def ~name:"restart_local_session"
+      ~description:
+        "Kill the existing subprocess for `session` and bring it up \
+         again with the same prewarm. Use when the subprocess is \
+         wedged or has crashed; for a fresh-OCaml-environment restart \
+         within the same subprocess, use `reset` instead."
+      ~schema:restart_local_session_schema;
+    tool_def ~name:"update_local_session"
+      ~description:
+        "Set or replace the `prewarm` path and/or `pool` size for an \
+         already-registered named session. The metadata is persisted \
+         to ~/.topup/sessions.json and surfaced in the next \
+         `initialize` handshake. Does NOT affect the running \
+         subprocess — call `restart_local_session` for changes to \
+         take effect on the live session."
+      ~schema:update_local_session_schema;
   ]
 
 let json_of_phase = function
@@ -308,10 +377,11 @@ let get_string_list args key =
       with Exit -> None)
   | _ -> None
 
-let remove_host_field (args : Yojson.Safe.t) : Yojson.Safe.t =
+let remove_routing_fields (args : Yojson.Safe.t) : Yojson.Safe.t =
   match args with
   | `Assoc fields ->
-      `Assoc (List.filter (fun (k, _) -> k <> "host") fields)
+      `Assoc
+        (List.filter (fun (k, _) -> k <> "host" && k <> "session") fields)
   | _ -> args
 
 let extract_host (args : Yojson.Safe.t) : string option =
@@ -320,6 +390,29 @@ let extract_host (args : Yojson.Safe.t) : string option =
   | Some "" | Some "local" -> None
   | Some h -> Some h
 
+let extract_session (args : Yojson.Safe.t) : string option =
+  match get_string args "session" with
+  | None -> None
+  | Some "" | Some "local" -> None
+  | Some s -> Some s
+
+let unwrap_routed_response ~label response =
+  match response with
+  | `Assoc fields -> (
+      match List.assoc_opt "result" fields with
+      | Some r -> r
+      | None -> (
+          match List.assoc_opt "error" fields with
+          | Some (`Assoc err_fields) ->
+              let msg =
+                match List.assoc_opt "message" err_fields with
+                | Some (`String s) -> s
+                | _ -> "unknown error"
+              in
+              text_result ~is_error:true (label ^ ": " ^ msg)
+          | _ -> text_result ~is_error:true (label ^ ": malformed response")))
+  | _ -> text_result ~is_error:true (label ^ ": malformed response")
+
 let route_remote registry host name args =
   match Host_registry.live registry host with
   | None ->
@@ -327,7 +420,7 @@ let route_remote registry host name args =
         ("host not registered: " ^ host
        ^ " (call start_session { host: " ^ host ^ " } first)")
   | Some rh -> (
-      let args' = remove_host_field args in
+      let args' = remove_routing_fields args in
       let req : Yojson.Safe.t =
         `Assoc
           [
@@ -339,28 +432,38 @@ let route_remote registry host name args =
                 [ ("name", `String name); ("arguments", args') ] );
           ]
       in
+      let label = "remote " ^ host in
       match Remote_host.send rh req with
-      | exception Failure msg ->
-          text_result ~is_error:true ("remote " ^ host ^ ": " ^ msg)
+      | exception Failure msg -> text_result ~is_error:true (label ^ ": " ^ msg)
       | exception exn ->
-          text_result ~is_error:true
-            ("remote " ^ host ^ ": " ^ Printexc.to_string exn)
-      | response -> (
-          match response with
-          | `Assoc fields -> (
-              match List.assoc_opt "result" fields with
-              | Some r -> r
-              | None -> (
-                  match List.assoc_opt "error" fields with
-                  | Some (`Assoc err_fields) ->
-                      let msg =
-                        match List.assoc_opt "message" err_fields with
-                        | Some (`String s) -> s
-                        | _ -> "unknown error"
-                      in
-                      text_result ~is_error:true ("remote " ^ host ^ ": " ^ msg)
-                  | _ -> text_result ~is_error:true "remote: malformed response"))
-          | _ -> text_result ~is_error:true "remote: malformed response"))
+          text_result ~is_error:true (label ^ ": " ^ Printexc.to_string exn)
+      | response -> unwrap_routed_response ~label response)
+
+let route_local_session pool session name args =
+  match Session_pool.live pool session with
+  | None ->
+      text_result ~is_error:true
+        ("session not registered: " ^ session
+       ^ " (call start_local_session { session: " ^ session ^ " } first)")
+  | Some ls -> (
+      let args' = remove_routing_fields args in
+      let req : Yojson.Safe.t =
+        `Assoc
+          [
+            ("jsonrpc", `String "2.0");
+            ("id", `Int 0);
+            ("method", `String "tools/call");
+            ( "params",
+              `Assoc
+                [ ("name", `String name); ("arguments", args') ] );
+          ]
+      in
+      let label = "session " ^ session in
+      match Local_session.send ls req with
+      | exception Failure msg -> text_result ~is_error:true (label ^ ": " ^ msg)
+      | exception exn ->
+          text_result ~is_error:true (label ^ ": " ^ Printexc.to_string exn)
+      | response -> unwrap_routed_response ~label response)
 
 let connect_error_result host msg =
   let payload : Yojson.Safe.t =
@@ -526,15 +629,116 @@ let dispatch_lifecycle registry name (args : Yojson.Safe.t) : Yojson.Safe.t =
           | exception Failure msg -> text_result ~is_error:true msg))
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
-let dispatch session registry name (args : Yojson.Safe.t) : Yojson.Safe.t =
+let connect_error_session_result session msg =
+  let payload : Yojson.Safe.t =
+    `Assoc
+      [
+        ( "error",
+          `Assoc
+            [
+              ("phase", `String "connect");
+              ("session", `String session);
+              ("message", `String msg);
+            ] );
+      ]
+  in
+  let r = json_result payload in
+  match r with
+  | `Assoc fs -> `Assoc (("isError", `Bool true) :: List.remove_assoc "isError" fs)
+  | _ -> r
+
+let get_int args key =
+  match get_field args key with
+  | Some (`Int n) -> Some n
+  | Some (`Float f) -> Some (int_of_float f)
+  | _ -> None
+
+let dispatch_pool_lifecycle pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
+  match name with
+  | "start_local_session" -> (
+      match get_string args "session" with
+      | None -> text_result ~is_error:true "missing 'session' argument"
+      | Some "" | Some "local" ->
+          text_result ~is_error:true
+            "session 'local' is the in-process session; \
+             start_local_session is for named subprocesses"
+      | Some session -> (
+          let prewarm = get_string args "prewarm" in
+          let pool_size = get_int args "pool" in
+          match
+            Session_pool.start_session pool ~name:session ?prewarm
+              ?pool:pool_size ()
+          with
+          | ls ->
+              let payload : Yojson.Safe.t =
+                `Assoc
+                  [
+                    ("ok", `Bool true);
+                    ("session", `String session);
+                    ("local_socket", `String (Local_session.local_socket ls));
+                    ( "pool",
+                      `Int (match pool_size with Some n -> n | None -> 1) );
+                  ]
+              in
+              json_result payload
+          | exception Failure msg -> connect_error_session_result session msg
+          | exception exn ->
+              connect_error_session_result session (Printexc.to_string exn)))
+  | "restart_local_session" -> (
+      match get_string args "session" with
+      | None -> text_result ~is_error:true "missing 'session' argument"
+      | Some "" | Some "local" ->
+          text_result ~is_error:true
+            "session 'local' is the in-process session; \
+             restart_local_session is for named subprocesses"
+      | Some session -> (
+          match Session_pool.restart_session pool ~name:session with
+          | ls ->
+              let payload : Yojson.Safe.t =
+                `Assoc
+                  [
+                    ("ok", `Bool true);
+                    ("session", `String session);
+                    ("local_socket", `String (Local_session.local_socket ls));
+                  ]
+              in
+              json_result payload
+          | exception Failure msg -> connect_error_session_result session msg
+          | exception exn ->
+              connect_error_session_result session (Printexc.to_string exn)))
+  | "update_local_session" -> (
+      match get_string args "session" with
+      | None -> text_result ~is_error:true "missing 'session' argument"
+      | Some "" | Some "local" ->
+          text_result ~is_error:true
+            "session 'local' has no mutable metadata"
+      | Some session -> (
+          let prewarm = get_string args "prewarm" in
+          let pool_size = get_int args "pool" in
+          match
+            Session_pool.update_session pool ~name:session ?prewarm
+              ?pool:pool_size ()
+          with
+          | () -> text_result "ok"
+          | exception Failure msg -> text_result ~is_error:true msg))
+  | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
+
+let dispatch session registry pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
   try
     match name with
     | "start_session" | "restart_session" | "update_host" ->
         dispatch_lifecycle registry name args
+    | "start_local_session" | "restart_local_session" | "update_local_session"
+      ->
+        dispatch_pool_lifecycle pool name args
     | _ -> (
-        match extract_host args with
-        | None -> dispatch_local session name args
-        | Some host -> route_remote registry host name args)
+        match (extract_host args, extract_session args) with
+        | Some _, Some _ ->
+            text_result ~is_error:true
+              "host and session are mutually exclusive; pass at most one"
+        | None, None -> dispatch_local session name args
+        | None, Some s -> route_local_session pool s name args
+        | Some h, None -> route_remote registry h name args)
   with exn ->
     text_result ~is_error:true
       ("internal error in " ^ name ^ ": " ^ Printexc.to_string exn)

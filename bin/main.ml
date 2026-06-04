@@ -22,6 +22,7 @@ let make_session () =
   Topup.Session.create ?log_path ?checkpoint_dir ()
 
 let make_registry () = Mcp.Host_registry.create ()
+let make_pool () = Mcp.Session_pool.create ()
 
 let die_on_failure f =
   try f ()
@@ -36,25 +37,32 @@ let usage =
 let run_remote_via_registry ~host ?remote_socket () =
   let session = make_session () in
   let registry = make_registry () in
+  let pool = make_pool () in
   let _ : Mcp.Remote_host.t =
     Mcp.Host_registry.start_session registry ~host ?remote_socket ()
   in
   at_exit (fun () -> Mcp.Host_registry.close_all registry);
-  Mcp.Server.run ~ic:stdin ~oc:stdout ~session ~registry ~default_host:host ()
+  at_exit (fun () -> Mcp.Session_pool.close_all pool);
+  Mcp.Server.run ~ic:stdin ~oc:stdout ~session ~registry ~pool
+    ~default_host:host ()
 
 let () =
   match Array.to_list Sys.argv with
   | [ _ ] ->
       let session = make_session () in
       let registry = make_registry () in
+      let pool = make_pool () in
       at_exit (fun () -> Mcp.Host_registry.close_all registry);
-      Mcp.Server.run ~ic:stdin ~oc:stdout ~session ~registry ()
+      at_exit (fun () -> Mcp.Session_pool.close_all pool);
+      Mcp.Server.run ~ic:stdin ~oc:stdout ~session ~registry ~pool ()
   | [ _; "--socket"; path ] ->
       die_on_failure (fun () ->
           let session = make_session () in
           let registry = make_registry () in
+          let pool = make_pool () in
           at_exit (fun () -> Mcp.Host_registry.close_all registry);
-          Mcp.Server.serve_unix ~path ~session ~registry ())
+          at_exit (fun () -> Mcp.Session_pool.close_all pool);
+          Mcp.Server.serve_unix ~path ~session ~registry ~pool ())
   | [ _; "--proxy"; path ] ->
       die_on_failure (fun () -> Mcp.Proxy.run_proxy ~socket_path:path ())
   | [ _; "--remote"; host ] ->

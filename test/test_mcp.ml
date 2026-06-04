@@ -31,9 +31,11 @@ let with_server f =
   let sc_ic, sc_oc = pipe_pair () in
   let session = Topup.Session.create () in
   let registry = Mcp.Host_registry.create () in
+  let pool = Mcp.Session_pool.create () in
   let t =
     Thread.create
-      (fun () -> Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ())
+      (fun () ->
+        Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ~pool ())
       ()
   in
   let result = f sc_ic cs_oc in
@@ -82,7 +84,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 12 -> ()
+       | `List tools when List.length tools = 15 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
@@ -377,9 +379,11 @@ let with_server_logged ~log_path ~checkpoint_dir f =
   let sc_ic, sc_oc = pipe_pair () in
   let session = Topup.Session.create ~log_path ~checkpoint_dir () in
   let registry = Mcp.Host_registry.create () in
+  let pool = Mcp.Session_pool.create () in
   let t =
     Thread.create
-      (fun () -> Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ())
+      (fun () ->
+        Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ~pool ())
       ()
   in
   let result = f sc_ic cs_oc in
@@ -458,6 +462,107 @@ let test_checkpoint_restore_round_trip () =
      Unix.rmdir ckpt_dir
    with _ -> ())
 
+let test_host_session_mutually_exclusive () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ( "arguments",
+              `Assoc
+                [
+                  ("host", `String "h");
+                  ("session", `String "s");
+                  ("source", `String "1;;");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 40 "tools/call" ~params ());
+      let r = read_response_id ic in
+      match get_in r [ "result"; "isError" ] with
+      | `Bool true ->
+          let text =
+            match get_in r [ "result"; "content" ] with
+            | `List [ `Assoc fs ] -> (
+                match List.assoc_opt "text" fs with
+                | Some (`String s) -> s
+                | _ -> "")
+            | _ -> ""
+          in
+          if not (contains text "mutually exclusive") then
+            fail "host+session: expected 'mutually exclusive' in error text"
+      | _ -> fail "host+session: expected isError true")
+
+let test_unknown_session_errors () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ( "arguments",
+              `Assoc
+                [
+                  ("session", `String "no-such-session");
+                  ("source", `String "1+1;;");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 41 "tools/call" ~params ());
+      let r = read_response_id ic in
+      match get_in r [ "result"; "isError" ] with
+      | `Bool true -> ()
+      | _ -> fail "expected isError true for unknown session")
+
+let test_session_local_aliases () =
+  with_server (fun ic oc ->
+      let bind =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ( "arguments",
+              `Assoc
+                [
+                  ("session", `String "local");
+                  ("source", `String "let sl = 13 * 13;;");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 42 "tools/call" ~params:bind ());
+      let _ = read_response_id ic in
+      let read_back =
+        `Assoc
+          [
+            ("name", `String "eval");
+            ("arguments", `Assoc [ ("source", `String "sl;;") ]);
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 43 "tools/call" ~params:read_back ());
+      let r = read_response_id ic in
+      let text = text_of r in
+      let payload = Yojson.Safe.from_string text in
+      match get_in payload [ "value_repr" ] with
+      | `String "169" -> ()
+      | _ -> fail "session:local did not share state with session omitted")
+
+let test_session_pool_persistence () =
+  let pid = Unix.getpid () in
+  let path =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-mcp-sessions-%d.json" pid)
+  in
+  (try Sys.remove path with _ -> ());
+  Unix.putenv "TOPUP_SESSIONS_FILE" path;
+  let p = Mcp.Session_pool.create () in
+  let entries = ref [] in
+  Mcp.Session_pool.iter p (fun e -> entries := e :: !entries);
+  if !entries <> [] then fail "fresh pool should be empty";
+  (* Update doesn't apply to a missing entry. *)
+  (match Mcp.Session_pool.update_session p ~name:"never-registered" () with
+   | () -> fail "update_session of missing entry should fail"
+   | exception Failure _ -> ());
+  (try Sys.remove path with _ -> ());
+  Unix.putenv "TOPUP_SESSIONS_FILE" "off"
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -465,6 +570,7 @@ let () =
   in
   Unix.putenv "TOPUP_SPILL_DIR" spill_dir;
   Unix.putenv "TOPUP_HOSTS_FILE" "off";
+  Unix.putenv "TOPUP_SESSIONS_FILE" "off";
   test_rpc_roundtrip ();
   test_initialize_list_call ();
   test_initialize_has_instructions ();
@@ -472,5 +578,9 @@ let () =
   test_host_local_aliases ();
   test_eval_batch ();
   test_checkpoint_restore_round_trip ();
+  test_host_session_mutually_exclusive ();
+  test_unknown_session_errors ();
+  test_session_local_aliases ();
+  test_session_pool_persistence ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

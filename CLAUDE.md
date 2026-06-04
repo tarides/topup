@@ -136,7 +136,8 @@ phrase failed mid-replay and the session is in an intermediate state.
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
   The full set is `eval`, `eval_batch`, `env`, `lookup`, `reset`,
   `cancel`, `load`, `checkpoint`, `restore`, `start_session`,
-  `restart_session`, `update_host`.
+  `restart_session`, `update_host`, `start_local_session`,
+  `restart_local_session`, `update_local_session`.
 
 ## Multi-host routing (per-call `host:`)
 
@@ -177,6 +178,47 @@ Test hook for cram fixtures: setting
 `TOPUP_HOST_SOCKET_<HOST>=/path/to/sock` (with `<HOST>`
 uppercased) makes `start_session { host: "<host>" }` skip the SSH
 spawn and connect to the named local socket directly. Test-only.
+
+## Named local sessions (per-call `session:`)
+
+Same surface as `host:` but for local subprocesses. Every state-bearing
+tool also accepts an optional `session: string`; omit or pass
+`"local"`/`""` for the in-process Toploop, pass any other name to
+route the call to a `topup --socket` subprocess managed by the same
+server. `session:` and `host:` are **mutually exclusive** — passing
+both yields a routing error.
+
+Lifecycle is explicit and parallel to the host lifecycle:
+
+- `start_local_session { session, prewarm?, pool? }` — forks
+  `topup --socket <path>`, runs the MCP `initialize` handshake, and
+  (when `prewarm` is given) evaluates `#use <prewarm>;;` before
+  returning. A failing prewarm kills the subprocess and surfaces the
+  error. When `pool > 1`, also spawns siblings named
+  `<session>.1` … `<session>.(pool-1)` sharing the same prewarm.
+  Idempotent on a live session.
+- `restart_local_session { session }` — kills and re-spawns. Use
+  when wedged; for a fresh OCaml environment within the same
+  subprocess use `reset { session }` instead.
+- `update_local_session { session, prewarm?, pool? }` — updates the
+  persisted metadata (not the live subprocess; restart to apply).
+
+Subprocesses inherit the parent server's environment, so
+`TOPUP_CHECKPOINT_DIR` and `TOPUP_SPILL_DIR` are shared by default —
+which is why `checkpoint { session: "a", label: "L" }` followed by
+`restore { session: "b", label: "L" }` branches off "a" without any
+extra plumbing.
+
+Persistence: registry metadata (name, prewarm, pool size, last_seen)
+goes to `~/.topup/sessions.json`. Override via
+`TOPUP_SESSIONS_FILE=<path>`; `=off` disables. Live subprocess state
+is never persisted — restarted servers come up with no live sessions
+and require fresh `start_local_session` calls.
+
+Test hook: `TOPUP_SESSION_SOCKET_<NAME>=/path/to/sock` (with
+`<NAME>` uppercased) makes `start_local_session { session: "<name>" }`
+skip the subprocess spawn and connect to the named socket directly.
+Test-only; mirrors the `TOPUP_HOST_SOCKET_*` hook for cram fixtures.
 
 ## Remote execution (single-host shortcut)
 

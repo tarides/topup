@@ -11,6 +11,7 @@ val run :
   oc:out_channel ->
   session:Topup.Session.t ->
   registry:Host_registry.t ->
+  pool:Session_pool.t ->
   ?default_host:string ->
   unit ->
   unit
@@ -27,6 +28,7 @@ val serve_unix :
   path:string ->
   session:Topup.Session.t ->
   registry:Host_registry.t ->
+  pool:Session_pool.t ->
   ?default_host:string ->
   unit ->
   unit

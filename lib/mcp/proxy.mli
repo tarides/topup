@@ -14,6 +14,11 @@ val run_proxy :
     descriptor. Raises [Failure] on timeout or non-retryable error. *)
 val connect_with_retry : path:string -> timeout:float -> Unix.file_descr
 
+(** [random_hex n] returns a string of [n] random lowercase hex
+    characters. Uses the OCaml [Random] state initialised on first
+    call. *)
+val random_hex : int -> string
+
 type ssh_handle = {
   ssh_pid : int;
   local_sock : string;
