@@ -82,7 +82,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 10 -> ()
+       | `List tools when List.length tools = 12 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
@@ -372,6 +372,92 @@ let test_eval_batch () =
        | _ -> fail "non-string element: expected isError true");
       ())
 
+let with_server_logged ~log_path ~checkpoint_dir f =
+  let cs_ic, cs_oc = pipe_pair () in
+  let sc_ic, sc_oc = pipe_pair () in
+  let session = Topup.Session.create ~log_path ~checkpoint_dir () in
+  let registry = Mcp.Host_registry.create () in
+  let t =
+    Thread.create
+      (fun () -> Mcp.Server.run ~ic:cs_ic ~oc:sc_oc ~session ~registry ())
+      ()
+  in
+  let result = f sc_ic cs_oc in
+  close_out cs_oc;
+  Thread.join t;
+  result
+
+let test_checkpoint_restore_round_trip () =
+  let pid = Unix.getpid () in
+  let log_path =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-mcp-ck-log-%d.ml" pid)
+  in
+  let ckpt_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-mcp-ck-dir-%d" pid)
+  in
+  (try Sys.remove log_path with _ -> ());
+  (try
+     Array.iter
+       (fun n ->
+         try Unix.unlink (Filename.concat ckpt_dir n) with _ -> ())
+       (Sys.readdir ckpt_dir);
+     Unix.rmdir ckpt_dir
+   with _ -> ());
+  with_server_logged ~log_path ~checkpoint_dir:ckpt_dir (fun ic oc ->
+      let call ?(id = 30) name args =
+        let params =
+          `Assoc [ ("name", `String name); ("arguments", args) ]
+        in
+        Mcp.Rpc.write_message oc (request id "tools/call" ~params ());
+        read_response_id ic
+      in
+      let _ =
+        call ~id:31 "eval"
+          (`Assoc [ ("source", `String "let m1 = 11;;") ])
+      in
+      let r_ck =
+        call ~id:32 "checkpoint" (`Assoc [ ("label", `String "t1") ])
+      in
+      (match get_in r_ck [ "result"; "isError" ] with
+       | `Bool false -> ()
+       | _ -> fail "checkpoint: expected isError false");
+      let _ =
+        call ~id:33 "eval"
+          (`Assoc [ ("source", `String "let m1 = 0;;") ])
+      in
+      let r_rs =
+        call ~id:34 "restore" (`Assoc [ ("label", `String "t1") ])
+      in
+      let pay_rs = Yojson.Safe.from_string (text_of r_rs) in
+      (match get_in pay_rs [ "error" ] with
+       | `Null -> ()
+       | _ -> fail "restore returned an error");
+      let r_lookup =
+        call ~id:35 "eval"
+          (`Assoc [ ("source", `String "m1;;") ])
+      in
+      let pay_l = Yojson.Safe.from_string (text_of r_lookup) in
+      (match get_in pay_l [ "value_repr" ] with
+       | `String "11" -> ()
+       | _ -> fail "post-restore m1 != 11");
+      let r_bad =
+        call ~id:36 "restore" (`Assoc [ ("label", `String "no-such") ])
+      in
+      (match get_in r_bad [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "restore missing label: expected isError true");
+      ());
+  (try Sys.remove log_path with _ -> ());
+  (try
+     Array.iter
+       (fun n ->
+         try Unix.unlink (Filename.concat ckpt_dir n) with _ -> ())
+       (Sys.readdir ckpt_dir);
+     Unix.rmdir ckpt_dir
+   with _ -> ())
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -385,5 +471,6 @@ let () =
   test_unknown_host_errors ();
   test_host_local_aliases ();
   test_eval_batch ();
+  test_checkpoint_restore_round_trip ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

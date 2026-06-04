@@ -7,9 +7,19 @@ let resolve_log_path () =
       | Some home -> Some (Filename.concat home ".topup/history.ml")
       | None -> None)
 
+let resolve_checkpoint_dir () =
+  match Sys.getenv_opt "TOPUP_CHECKPOINT_DIR" with
+  | Some "off" | Some "" -> None
+  | Some path -> Some path
+  | None -> (
+      match Sys.getenv_opt "HOME" with
+      | Some home -> Some (Filename.concat home ".topup/checkpoints")
+      | None -> None)
+
 let make_session () =
   let log_path = resolve_log_path () in
-  Topup.Session.create ?log_path ()
+  let checkpoint_dir = resolve_checkpoint_dir () in
+  Topup.Session.create ?log_path ?checkpoint_dir ()
 
 let make_registry () = Mcp.Host_registry.create ()
 

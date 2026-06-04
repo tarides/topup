@@ -60,6 +60,12 @@ let load_schema =
 
 let host_only_schema = object_schema [ ("host", host_prop) ]
 
+let checkpoint_schema =
+  object_schema ~required:[ "label" ]
+    [ ("label", string_prop); ("host", host_prop) ]
+
+let restore_schema = checkpoint_schema
+
 let start_session_schema =
   object_schema ~required:[ "host" ]
     [ ("host", host_prop); ("remote_socket", string_prop) ]
@@ -147,6 +153,35 @@ let descriptors : Yojson.Safe.t list =
          routes the load to a remote toplevel; the path must exist on the \
          remote filesystem."
       ~schema:load_schema;
+    tool_def ~name:"checkpoint"
+      ~description:
+        "Snapshot the current phrase log under `label`. The snapshot is \
+         plain OCaml source written to \
+         $TOPUP_CHECKPOINT_DIR/<label>.ml (default \
+         ~/.topup/checkpoints/). Overwrites any prior snapshot with the \
+         same label, atomically (write to .tmp then rename). Requires \
+         phrase logging to be enabled (TOPUP_LOG unset or pointing at a \
+         writable file). Label must match [A-Za-z0-9._-]+ and must not \
+         start with a dot or contain `..`. Pair with `restore` to branch \
+         exploration or recover from a corrupted toplevel. Optional \
+         `host` routes the call to a remote session previously brought \
+         up via start_session; the snapshot then lives under the remote \
+         user's home, not locally."
+      ~schema:checkpoint_schema;
+    tool_def ~name:"restore"
+      ~description:
+        "Reset the toplevel environment and replay the checkpoint named \
+         `label`. The current phrase log is replaced with the \
+         checkpoint's contents before replay so it stays consistent with \
+         the live session. Returns the same JSON shape as `eval`, \
+         reflecting the result of #use-ing the restored log: a non-null \
+         `error` means a phrase failed mid-replay and the session is in \
+         an intermediate state. Note: #load-ed libraries are NOT in the \
+         phrase log; re-issue `load` after restoring a checkpoint that \
+         depended on them. Optional `host` selects a remote session; \
+         checkpoints are per-host (the remote daemon's own checkpoint \
+         dir is what gets restored)."
+      ~schema:restore_schema;
     tool_def ~name:"start_session"
       ~description:
         "Bring up a remote topup session on `host`. Opens an SSH tunnel \
@@ -414,6 +449,22 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
           in
           let r = Session.eval session phrase in
           json_result (json_of_eval_result r))
+  | "checkpoint" -> (
+      match get_string args "label" with
+      | None -> text_result ~is_error:true "missing 'label' argument"
+      | Some label -> (
+          match Session.checkpoint session ~label with
+          | Ok () ->
+              json_result
+                (`Assoc [ ("ok", `Bool true); ("label", `String label) ])
+          | Error msg -> text_result ~is_error:true msg))
+  | "restore" -> (
+      match get_string args "label" with
+      | None -> text_result ~is_error:true "missing 'label' argument"
+      | Some label -> (
+          match Session.restore session ~label with
+          | Ok r -> json_result (json_of_eval_result r)
+          | Error msg -> text_result ~is_error:true msg))
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
 let dispatch_lifecycle registry name (args : Yojson.Safe.t) : Yojson.Safe.t =

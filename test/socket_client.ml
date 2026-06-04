@@ -118,6 +118,37 @@ let print_load response =
       print_endline ("ERROR: " ^ msg)
   | _ -> print_endline "ok"
 
+let print_checkpoint response =
+  let text = extract_text response in
+  match Yojson.Safe.from_string text with
+  | exception _ -> print_endline text
+  | payload -> (
+      match get_field payload "ok" with
+      | Some (`Bool true) -> print_endline "ok"
+      | _ -> print_endline text)
+
+let result_is_error response =
+  match get_field response "result" with
+  | Some (`Assoc fs) -> List.assoc_opt "isError" fs = Some (`Bool true)
+  | _ -> false
+
+let print_restore response =
+  let text = extract_text response in
+  if result_is_error response then print_endline ("ERROR: " ^ text)
+  else
+    match Yojson.Safe.from_string text with
+    | exception _ -> print_endline text
+    | payload -> (
+        match get_field payload "error" with
+        | Some (`Assoc fs) ->
+            let msg =
+              match List.assoc_opt "message" fs with
+              | Some (`String s) -> s
+              | _ -> "(no message)"
+            in
+            print_endline ("ERROR: " ^ msg)
+        | _ -> print_endline "ok")
+
 let do_call ~path ~name ~args ~handle =
   let ic, oc = connect path in
   send_line oc (Yojson.Safe.to_string (envelope ~name ~args));
@@ -152,6 +183,14 @@ let () =
       do_call ~path ~name:"load"
         ~args:(`Assoc [ ("path", `String cma) ])
         ~handle:print_load
+  | [ _; path; "checkpoint"; label ] ->
+      do_call ~path ~name:"checkpoint"
+        ~args:(`Assoc [ ("label", `String label) ])
+        ~handle:print_checkpoint
+  | [ _; path; "restore"; label ] ->
+      do_call ~path ~name:"restore"
+        ~args:(`Assoc [ ("label", `String label) ])
+        ~handle:print_restore
   | _ ->
       prerr_endline "usage:";
       prerr_endline
@@ -161,4 +200,6 @@ let () =
       prerr_endline "  socket_client.exe <path> lookup <name>";
       prerr_endline "  socket_client.exe <path> reset";
       prerr_endline "  socket_client.exe <path> load <cma-path>";
+      prerr_endline "  socket_client.exe <path> checkpoint <label>";
+      prerr_endline "  socket_client.exe <path> restore <label>";
       exit 2

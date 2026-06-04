@@ -24,8 +24,10 @@ type eval_result = {
 (** Create a fresh session. If [~log_path] is given, every phrase that
     evaluates without error is appended to that file as raw OCaml, so the
     session can be replayed later by `#use`-ing the file in a new session.
-    The file (and any missing parent directory) is created on demand. *)
-val create : ?log_path:string -> unit -> t
+    The file (and any missing parent directory) is created on demand.
+    [~checkpoint_dir] enables [checkpoint] / [restore]; the directory is
+    created on demand and is NOT wiped (unlike the spill directory). *)
+val create : ?log_path:string -> ?checkpoint_dir:string -> unit -> t
 
 (** Evaluate one or more OCaml phrases. If [timeout] is given, evaluation is
     interrupted after that many seconds and a cancellation error is returned. *)
@@ -45,3 +47,26 @@ val reset : t -> unit
 
 (** Request interruption of the currently-running phrase. *)
 val cancel : t -> unit
+
+(** Snapshot the current phrase log under [~label]. The log file is copied
+    to the checkpoint directory under that name; a subsequent [restore]
+    replays it. Overwrites any existing checkpoint with the same label.
+    Returns [Error msg] when phrase logging or checkpointing is disabled,
+    or when the label is malformed (must match [\[A-Za-z0-9._-\]+] and
+    cannot start with a dot or contain [..]). *)
+val checkpoint : t -> label:string -> (unit, string) result
+
+(** Reset the toplevel environment and replay the checkpoint named
+    [~label]. The current phrase log is replaced with the checkpoint's
+    contents before replay so it stays consistent with the live session.
+    The returned [eval_result] reflects the replay; a non-null [error]
+    means a phrase failed mid-replay and the session is in an
+    intermediate state. Returns [Error msg] if the checkpoint does not
+    exist or checkpointing is disabled. Note: [#load]ed libraries are
+    not in the log and must be re-loaded after [restore]. *)
+val restore : t -> label:string -> (eval_result, string) result
+
+(** Enumerate known checkpoint labels (filename basenames without the
+    [.ml] suffix), sorted. Returns the empty list if checkpointing is
+    disabled or the directory is empty. *)
+val list_checkpoints : t -> string list

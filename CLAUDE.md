@@ -34,8 +34,8 @@ bin/main.ml   wires Session + Server to stdin/stdout (default) or
               bridge via `--proxy <path>` / `--remote <host>`;
               reads TOPUP_LOG
 test/         test_session.ml (unit) + test_mcp.ml (in-process MCP)
-              + socket.t, socket_lifecycle.t, proxy.t (cram against
-              the binary)
+              + socket.t, socket_lifecycle.t, proxy.t, checkpoint.t
+              (cram against the binary)
 ```
 
 ## Things you need to know to change `Session`
@@ -97,6 +97,29 @@ char is `#`). This prevents replay recursion: `#use "<log>"` evaluated
 once would otherwise log itself, and the next replay would re-`#use` and
 recurse until stack overflow. Don't remove this guard.
 
+## Checkpoint / restore
+
+`checkpoint(label)` copies the phrase log to
+`$TOPUP_CHECKPOINT_DIR/<label>.ml` (default `$HOME/.topup/checkpoints/`);
+`restore(label)` truncates the current log, copies the snapshot into
+its place, calls `Session.reset`, and `#use`s the restored log. The
+returned eval result reflects the replay — a non-null `error` means a
+phrase failed mid-replay and the session is in an intermediate state.
+
+- Override the directory via `TOPUP_CHECKPOINT_DIR=<path>`; `=off`
+  disables `checkpoint` / `restore` (each returns a clear error).
+- Labels must match `[A-Za-z0-9._-]+`, may not start with `.`, and may
+  not contain `..`. Validated in `Session`, not just at the MCP edge.
+- Writes are atomic (`<label>.ml.tmp` + `Unix.rename`); a crash mid-
+  checkpoint cannot leave a partial file that `restore` would read.
+- The directory is **not** wiped on `Session.create` — checkpoints
+  must survive server restarts, that is the entire point.
+- `#load`ed libraries are not in the phrase log. Restoring a
+  checkpoint that depended on a loaded library will fail at
+  typecheck; re-issue `load` first.
+- `restore` replaces the live log so subsequent `eval` calls extend a
+  log consistent with the current session.
+
 ## MCP / Claude Code integration gotchas
 
 - `.mcp.json` at the repo root (gitignored) names the binary that Claude
@@ -112,15 +135,16 @@ recurse until stack overflow. Don't remove this guard.
 - The MCP tools are deferred — load schemas via
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
   The full set is `eval`, `eval_batch`, `env`, `lookup`, `reset`,
-  `cancel`, `load`, `start_session`, `restart_session`, `update_host`.
+  `cancel`, `load`, `checkpoint`, `restore`, `start_session`,
+  `restart_session`, `update_host`.
 
 ## Multi-host routing (per-call `host:`)
 
 Every tool that takes session state (`eval`, `env`, `lookup`, `load`,
-`reset`, `cancel`) accepts an optional `host: string`. Omit (or pass
-`"local"`/`""`) to hit the in-process Toploop; pass any other name
-to route the call to a remote `topup --socket` daemon over an
-SSH-forwarded Unix socket.
+`reset`, `cancel`, `checkpoint`, `restore`) accepts an optional
+`host: string`. Omit (or pass `"local"`/`""`) to hit the in-process
+Toploop; pass any other name to route the call to a remote
+`topup --socket` daemon over an SSH-forwarded Unix socket.
 
 Lifecycle is explicit:
 
@@ -197,9 +221,10 @@ disconnects SSH, which terminates the remote process.
 
 Known limitations:
 
-- **Phrase log + spill files are remote-only.** The remote `topup`
-  writes its log and spill files under the remote user's `$HOME`.
-  The local agent's `Read` tool cannot reach them.
+- **Phrase log, spill files, and checkpoints are remote-only.** The
+  remote `topup` writes its log, spill files, and checkpoints under
+  the remote user's `$HOME`. The local agent's `Read` tool cannot
+  reach them.
 - **Dead tunnel = local proxy exits.** No auto-reconnect. Restart
   the MCP client to reconnect; with `--remote-socket` pinned, the
   surviving remote daemon keeps the session.

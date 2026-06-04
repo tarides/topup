@@ -302,4 +302,130 @@ let () =
          "FAIL background fibre extended eval: elapsed=%.3f repr=%s\n"
          elapsed (Option.value ~default:"<none>" r_bg.value_repr);
        exit 1);
+  (* Checkpoint / restore round-trip. *)
+  let ckpt_log =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-ckpt-log-%d.ml" (Unix.getpid ()))
+  in
+  let ckpt_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-ckpt-%d" (Unix.getpid ()))
+  in
+  (try Sys.remove ckpt_log with _ -> ());
+  let rec rm_rf path =
+    match Unix.lstat path with
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+    | { Unix.st_kind = Unix.S_DIR; _ } ->
+        Array.iter (fun n -> rm_rf (Filename.concat path n))
+          (try Sys.readdir path with Sys_error _ -> [||]);
+        (try Unix.rmdir path with Unix.Unix_error _ -> ())
+    | _ -> (try Unix.unlink path with Unix.Unix_error _ -> ())
+  in
+  rm_rf ckpt_dir;
+  let s_ck = Session.create ~log_path:ckpt_log ~checkpoint_dir:ckpt_dir () in
+  let _ = Session.eval s_ck "let a = 7;;" in
+  let _ = Session.eval s_ck "let b = a * 6;;" in
+  (match Session.checkpoint s_ck ~label:"first" with
+   | Ok () -> ()
+   | Error msg ->
+       Printf.printf "FAIL checkpoint first: %s\n" msg;
+       exit 1);
+  let _ = Session.eval s_ck "let a = 999;;" in
+  (match Session.lookup s_ck "a" with
+   | Some { ty = "int"; _ } -> ()
+   | _ ->
+       print_endline "FAIL pre-restore: a is unbound";
+       exit 1);
+  let r_pre = Session.eval s_ck "a;;" in
+  (match r_pre.value_repr with
+   | Some "999" -> ()
+   | _ ->
+       Printf.printf "FAIL pre-restore: a=%s (want 999)\n"
+         (Option.value ~default:"<none>" r_pre.value_repr);
+       exit 1);
+  (match Session.restore s_ck ~label:"first" with
+   | Ok r when r.error = None -> ()
+   | Ok r ->
+       Printf.printf "FAIL restore first: error=%s\n"
+         (match r.error with Some e -> e.message | None -> "<none>");
+       exit 1
+   | Error msg ->
+       Printf.printf "FAIL restore first: %s\n" msg;
+       exit 1);
+  let r_a = Session.eval s_ck "a;;" in
+  (match r_a.value_repr with
+   | Some "7" -> ()
+   | _ ->
+       Printf.printf "FAIL post-restore a=%s (want 7)\n"
+         (Option.value ~default:"<none>" r_a.value_repr);
+       exit 1);
+  let r_b = Session.eval s_ck "b;;" in
+  (match r_b.value_repr with
+   | Some "42" -> ()
+   | _ ->
+       Printf.printf "FAIL post-restore b=%s (want 42)\n"
+         (Option.value ~default:"<none>" r_b.value_repr);
+       exit 1);
+  (* Restored log is consistent with the live session: subsequent eval
+     extends it, and a second restore is still possible. *)
+  let _ = Session.eval s_ck "let c = a + b;;" in
+  let log_after = read_file ckpt_log in
+  if not (contains_sub log_after "let c = a + b") then begin
+    print_endline "FAIL post-restore eval not appended to log";
+    exit 1
+  end;
+  (* Non-existent checkpoint. *)
+  (match Session.restore s_ck ~label:"nope" with
+   | Error _ -> ()
+   | Ok _ ->
+       print_endline "FAIL restore missing label should error";
+       exit 1);
+  (* Label validation. *)
+  List.iter
+    (fun bad ->
+      match Session.checkpoint s_ck ~label:bad with
+      | Error _ -> ()
+      | Ok () ->
+          Printf.printf "FAIL bad label accepted: %S\n" bad;
+          exit 1)
+    [ ""; "../etc"; "a/b"; ".hidden"; "foo..bar" ];
+  (match Session.checkpoint s_ck ~label:"v1.2-rc_3" with
+   | Ok () -> ()
+   | Error msg ->
+       Printf.printf "FAIL good label rejected: %s\n" msg;
+       exit 1);
+  (* Overwrite: second checkpoint replaces the first. *)
+  let _ = Session.eval s_ck "let marker = \"after\";;" in
+  (match Session.checkpoint s_ck ~label:"first" with
+   | Ok () -> ()
+   | Error msg ->
+       Printf.printf "FAIL re-checkpoint: %s\n" msg;
+       exit 1);
+  Session.reset s_ck;
+  (match Session.restore s_ck ~label:"first" with
+   | Ok _ -> ()
+   | Error msg ->
+       Printf.printf "FAIL restore after overwrite: %s\n" msg;
+       exit 1);
+  (match Session.lookup s_ck "marker" with
+   | Some _ -> ()
+   | None ->
+       print_endline "FAIL overwrite: marker missing after restore";
+       exit 1);
+  (* Checkpointing without log_path returns Error. *)
+  let s_nolog = Session.create ~checkpoint_dir:ckpt_dir () in
+  (match Session.checkpoint s_nolog ~label:"nolog" with
+   | Error _ -> ()
+   | Ok () ->
+       print_endline "FAIL checkpoint without log should error";
+       exit 1);
+  (* list_checkpoints enumerates labels. *)
+  let labels = Session.list_checkpoints s_ck in
+  if not (List.mem "first" labels && List.mem "v1.2-rc_3" labels) then begin
+    Printf.printf "FAIL list_checkpoints: got [%s]\n"
+      (String.concat "; " labels);
+    exit 1
+  end;
+  rm_rf ckpt_dir;
+  (try Sys.remove ckpt_log with _ -> ());
   print_endline "test_session: ok"

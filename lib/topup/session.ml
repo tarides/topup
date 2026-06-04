@@ -23,6 +23,7 @@ type t = {
   mutable history : string list;
   main_pid : int;
   log_path : string option;
+  checkpoint_dir : string option;
   spill : Spill.t;
 }
 
@@ -42,6 +43,18 @@ let ensure_parent_dir path =
     try Unix.mkdir dir 0o700 with
     | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
     | _ -> ()
+
+let mkdir_p path =
+  let rec loop p =
+    if p = "" || p = "/" || p = "." then ()
+    else begin
+      loop (Filename.dirname p);
+      match Unix.mkdir p 0o700 with
+      | () -> ()
+      | exception Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    end
+  in
+  loop path
 
 let starts_with_directive s =
   let n = String.length s in
@@ -71,7 +84,7 @@ let log_phrase t source =
           close_out oc
         with _ -> ())
 
-let create ?log_path () =
+let create ?log_path ?checkpoint_dir () =
   if not !initialized then begin
     Toploop.initialize_toplevel_env ();
     Pretty.configure_toploop ();
@@ -79,10 +92,14 @@ let create ?log_path () =
     Sys.catch_break true;
     initialized := true
   end;
+  (match checkpoint_dir with
+   | None -> ()
+   | Some dir -> (try mkdir_p dir with _ -> ()));
   {
     history = [];
     main_pid = Unix.getpid ();
     log_path;
+    checkpoint_dir;
     spill = Spill.create ();
   }
 
@@ -285,3 +302,116 @@ let reset t =
 
 let cancel t =
   try Unix.kill t.main_pid Sys.sigint with _ -> ()
+
+let valid_label_char c =
+  match c with
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
+  | _ -> false
+
+let validate_label label =
+  if label = "" then Error "label must be non-empty"
+  else if label.[0] = '.' then Error "label must not start with '.'"
+  else if
+    (* Reject ".." anywhere — a single dot is fine inside, e.g. "v1.2". *)
+    let n = String.length label in
+    let bad = ref false in
+    for i = 0 to n - 2 do
+      if label.[i] = '.' && label.[i + 1] = '.' then bad := true
+    done;
+    !bad
+  then Error "label must not contain '..'"
+  else
+    let ok = ref true in
+    String.iter (fun c -> if not (valid_label_char c) then ok := false) label;
+    if !ok then Ok ()
+    else Error "label may only contain [A-Za-z0-9._-]"
+
+let read_file_opt path =
+  match open_in_bin path with
+  | exception Sys_error _ -> ""
+  | ic ->
+      let n = in_channel_length ic in
+      let buf = Bytes.create n in
+      really_input ic buf 0 n;
+      close_in ic;
+      Bytes.unsafe_to_string buf
+
+let write_file_atomic path content =
+  let tmp = path ^ ".tmp" in
+  let oc =
+    open_out_gen
+      [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
+      0o600 tmp
+  in
+  output_string oc content;
+  close_out oc;
+  Unix.rename tmp path
+
+let checkpoint_path t label =
+  match t.checkpoint_dir with
+  | None -> None
+  | Some dir -> Some (Filename.concat dir (label ^ ".ml"))
+
+let checkpoint t ~label =
+  match validate_label label with
+  | Error _ as e -> e
+  | Ok () -> (
+      match (t.log_path, checkpoint_path t label) with
+      | None, _ ->
+          Error "checkpoint requires phrase logging (TOPUP_LOG is off)"
+      | _, None ->
+          Error "checkpoint disabled (TOPUP_CHECKPOINT_DIR=off)"
+      | Some log, Some dst -> (
+          try
+            (match t.checkpoint_dir with
+             | Some d -> (try mkdir_p d with _ -> ())
+             | None -> ());
+            let content = read_file_opt log in
+            write_file_atomic dst content;
+            Ok ()
+          with
+          | Unix.Unix_error (err, _, _) ->
+              Error ("checkpoint: " ^ Unix.error_message err)
+          | Sys_error msg -> Error ("checkpoint: " ^ msg)))
+
+let restore t ~label =
+  match validate_label label with
+  | Error _ as e -> e
+  | Ok () -> (
+      match (t.log_path, checkpoint_path t label) with
+      | None, _ ->
+          Error "restore requires phrase logging (TOPUP_LOG is off)"
+      | _, None ->
+          Error "restore disabled (TOPUP_CHECKPOINT_DIR=off)"
+      | Some log, Some src ->
+          if not (Sys.file_exists src) then
+            Error ("no such checkpoint: " ^ label)
+          else (
+            try
+              let content = read_file_opt src in
+              ensure_parent_dir log;
+              write_file_atomic log content;
+              reset t;
+              let r = eval t (Printf.sprintf "#use %S;;" log) in
+              Ok r
+            with
+            | Unix.Unix_error (err, _, _) ->
+                Error ("restore: " ^ Unix.error_message err)
+            | Sys_error msg -> Error ("restore: " ^ msg)))
+
+let list_checkpoints t =
+  match t.checkpoint_dir with
+  | None -> []
+  | Some dir -> (
+      match Sys.readdir dir with
+      | exception Sys_error _ -> []
+      | entries ->
+          let labels =
+            Array.fold_left
+              (fun acc name ->
+                if Filename.check_suffix name ".ml" then
+                  Filename.chop_suffix name ".ml" :: acc
+                else acc)
+              [] entries
+          in
+          List.sort compare labels)
