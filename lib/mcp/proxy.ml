@@ -87,6 +87,11 @@ let spawn_ssh ~host ?remote_socket () =
   in
   let local_sock = local_socket () in
   let dev_null = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0o600 in
+  let remote_dir = Filename.dirname remote_sock in
+  let remote_cmd =
+    Printf.sprintf "mkdir -p %s && exec topup --socket %s"
+      (Filename.quote remote_dir) (Filename.quote remote_sock)
+  in
   let argv =
     [|
       "ssh";
@@ -94,7 +99,7 @@ let spawn_ssh ~host ?remote_socket () =
       "-o"; "ServerAliveInterval=30";
       "-L"; Printf.sprintf "%s:%s" local_sock remote_sock;
       host;
-      "topup"; "--socket"; remote_sock;
+      remote_cmd;
     |]
   in
   let ssh_pid =

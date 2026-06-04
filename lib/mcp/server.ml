@@ -162,8 +162,12 @@ let serve_unix ~path ~session ~registry ?default_host () =
   Unix.listen server 1;
   at_exit (fun () ->
       try Unix.unlink path with _ -> ());
-  Sys.set_signal Sys.sigterm
-    (Sys.Signal_handle (fun _ -> exit 0));
+  let exit_on signal =
+    try Sys.set_signal signal (Sys.Signal_handle (fun _ -> exit 0))
+    with Invalid_argument _ -> ()
+  in
+  exit_on Sys.sigterm;
+  exit_on Sys.sighup;
   (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore
    with Invalid_argument _ -> ());
   while true do
