@@ -99,10 +99,18 @@ let spawn_ssh ~host ?remote_socket () =
      in the background and blocks on `cat` reading from the channel's
      stdin. When the local side closes [stdin_write] (or this process
      exits), `cat` reads EOF, the EXIT trap fires and SIGTERMs the
-     daemon, which runs its at_exit and unlinks the socket file. *)
+     daemon, which runs its at_exit and unlinks the socket file.
+
+     `topup`'s stdin/stdout/stderr are redirected to /dev/null. Without
+     this, ssh's channel-stdout / channel-stderr stay open through the
+     daemon's inherited fds, so ssh refuses to exit even after the
+     remote shell terminates — and the local side hangs. The cost is
+     no remote-side error visibility once the daemon is launched. *)
   let remote_cmd =
     Printf.sprintf
-      "mkdir -p %s && topup --socket %s & PID=$!; \
+      "mkdir -p %s; \
+       topup --socket %s </dev/null >/dev/null 2>&1 & \
+       PID=$!; \
        trap 'kill -TERM $PID 2>/dev/null; wait $PID 2>/dev/null' EXIT; \
        cat >/dev/null"
       (Filename.quote remote_dir) (Filename.quote remote_sock)
@@ -125,8 +133,30 @@ let spawn_ssh ~host ?remote_socket () =
   { ssh_pid; local_sock; remote_sock; stdin_write }
 
 let kill_ssh handle =
+  (* Close [stdin_write] first so ssh sees EOF on its stdin and
+     forwards the channel close to the remote, which lets the
+     remote `cat` wrapper exit and SIGTERM the daemon. Only
+     SIGTERM the ssh client itself as a fallback if it hasn't
+     exited on its own within a short window — the goal is to give
+     the channel-close time to propagate before yanking the
+     plug. *)
   (try Unix.close handle.stdin_write with _ -> ());
-  (try Unix.kill handle.ssh_pid Sys.sigterm with _ -> ());
+  let waited = ref 0.0 in
+  let interval = 0.05 in
+  let deadline = 1.0 in
+  let alive () =
+    try
+      match Unix.waitpid [ Unix.WNOHANG ] handle.ssh_pid with
+      | 0, _ -> true
+      | _ -> false
+    with _ -> false
+  in
+  while alive () && !waited < deadline do
+    Unix.sleepf interval;
+    waited := !waited +. interval
+  done;
+  if alive () then
+    (try Unix.kill handle.ssh_pid Sys.sigterm with _ -> ());
   (try Unix.unlink handle.local_sock with _ -> ())
 
 let run_remote ~host ?remote_socket () =
