@@ -3,6 +3,37 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — LLM-in-the-loop smoke test
+
+Closed the top backlog item. Phase-1's "operational" end-to-end
+exercise lands as a markdown playbook plus a captured first replay,
+walking the four beats the original entry named: define, use across a
+turn, cancel, reset. The Beat-2 step is the externalized-memory
+thesis check (DESIGN.md §"The externalized-memory thesis") — a real
+model resolves a natural-language question against a prior binding by
+name, without recomputation or paste-back.
+
+- `test/smoke/llm_playbook.md` — the runbook. Preconditions lead with
+  switch alignment (the binary path in `.mcp.json` must match the
+  switch's `opam var bin`, the catch nobody anticipates) and MCP
+  scope shadowing; then build/install/restart. Beat 1 nudges toward
+  a `Seq`-based prime generator with two idiomatic shapes (filter
+  pipeline and recursive sieve); the algorithm is incidental, what
+  matters is that a `primes : int list` binding lands.
+- `test/smoke/replay_2026-06-04.md` — the first captured run.
+  Verdict per beat; thesis held in practice.
+- `CLAUDE.md` — short pointer under a new "LLM-in-the-loop smoke
+  test" subsection. Not wired into `dune runtest`; not CI-gated, per
+  DESIGN.md line 178.
+- `backlog.md` — closed item removed; one new item appended:
+  **Server crash on malformed phrase input** (Beat 1 surfaced a real
+  bug — a duplicated-`let` paste killed the binary instead of
+  returning a parse error). Repro plan and fix-location candidates
+  in the new entry.
+
+`dune build @all` and `dune runtest --force` green; smoke playbook
+exercised end-to-end against the freshly-reinstalled binary.
+
 ## 2026-06-04 — Idle-detection contract for background fibres
 
 Closed the top backlog item and one of DESIGN.md's "Must answer

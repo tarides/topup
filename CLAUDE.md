@@ -142,3 +142,12 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"source":"1+2;;"}}}' \
 | _build/default/bin/main.bc.exe
 ```
+
+## LLM-in-the-loop smoke test
+
+`test/smoke/llm_playbook.md` is the operational end-to-end exercise: a
+human (or Claude in a fresh session) walks four beats — define, use
+across a turn, cancel, reset — and captures the transcript as
+`test/smoke/replay_<YYYY-MM-DD>.md`. The Beat-2 step is the
+externalized-memory thesis check (DESIGN.md §"The externalized-memory
+thesis"). Not wired into `dune runtest`; not CI-gated.

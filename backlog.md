@@ -5,17 +5,6 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## LLM-in-the-loop smoke tests
-
-Unit tests on `Session` and the in-process MCP integration exist.
-Phase-1 still wants an end-to-end smoke test driven by a real model:
-boot the server, drive a representative workflow (define values, use
-them across turns, hit cancel, hit reset), assert the externalized-
-memory thesis actually holds in practice. Scriptable from Claude Code
-via the `/caml` skill or directly via MCP.
-
-DESIGN.md, "Must answer before phase-1 ships".
-
 ## Assess first consumer's actual library needs
 
 If the first real consumer needs a large library (mmapped dataset,
@@ -266,3 +255,45 @@ DESIGN.md, phase-1 implementation choice "MCP transport"; bullet
 backlog entry for socket transport (now closed; see
 `changelog.md` 2026-06-03 entry "Unix-socket transport for
 `topup-mcp`").
+
+## Server crash on malformed phrase input
+
+Discovered during the first run of `test/smoke/llm_playbook.md` on
+2026-06-04 (see `test/smoke/replay_2026-06-04.md`, Beat 1). A
+malformed `/caml` paste — observed shape was a duplicated
+`let primes = let primes = …` head followed by a Seq-sieve body
+that had no `in <body>` for the inner binding — caused the topup
+MCP server to exit ("MCP error: Connection closed. The topup
+server appears to have died"). `/mcp` Reconnect recovered the
+session by re-spawning the same binary, so the crash is fatal to
+the running process, not just to the connection.
+
+Expected behaviour: `Toploop.execute_phrase` should surface a
+parse / typecheck error in the `error` field of the eval response
+and the server should keep running. Any input shape that exits the
+process is a bug, regardless of how garbled the source is.
+
+Not yet isolated. The smoke-test transcript shows further
+mangling on the retry (terminal control characters or paste
+truncation) so it is unclear whether the original crash came from
+the duplicated `let` or from a different malformed shape that
+happened to land on the same line. Repro plan:
+
+1. Pipe the duplicated-`let` form directly through the binary
+   (`printf '…' | _build/default/bin/main.bc.exe`) per the
+   CLAUDE.md "Dogfooding" stdio recipe; check whether it
+   reproduces in isolation.
+2. If not, try the second mangled shape verbatim from the replay
+   log.
+3. Once a minimal reproducer is identified, decide whether the
+   fix lives in `lib/topup/session.ml` (catch the offending
+   exception around `Toploop.execute_phrase`), in `lib/topup/error.ml`
+   (broaden `Location.error_of_exn` coverage), or in
+   `lib/mcp/server.ml` (per-request crash isolation so one bad
+   phrase cannot kill the dispatch loop).
+4. Add a `test_session.ml` stanza pinning the behaviour: malformed
+   source returns an error, the session remains usable on the
+   next `eval`.
+
+Cross-references: `test/smoke/replay_2026-06-04.md` "Findings"
+section.
