@@ -1,7 +1,8 @@
 (tests
  (names test_session test_mcp)
  (modes byte)
- (libraries topup mcp unix threads.posix))
+ (libraries topup mcp unix threads.posix)
+ (deps fixtures/topup_load_fixture/topup_load_fixture.cma))
 
 (executable
  (name socket_client)
@@ -9,4 +10,8 @@
  (libraries unix yojson))
 
 (cram
- (deps %{bin:topup} ./socket_client.bc.exe))
+ (deps
+  %{bin:topup}
+  ./socket_client.bc.exe
+  fixtures/topup_load_fixture/topup_load_fixture.cma
+  fixtures/topup_load_fixture/topup_load_fixture.cmi))

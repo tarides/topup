@@ -1,0 +1,12 @@
+; Build the fixture cma without dune's library wrapper, so the .cmi sits
+; next to the .cma. `#load` only adds the .cma's directory to its bytecode
+; loader's path — the toplevel typechecker still needs to find the .cmi
+; via Load_path, which means same directory or via #directory.
+
+(rule
+ (targets topup_load_fixture.cma topup_load_fixture.cmi topup_load_fixture.cmo)
+ (deps topup_load_fixture.ml)
+ (action
+  (progn
+   (run ocamlc -c %{deps})
+   (run ocamlc -a -o topup_load_fixture.cma topup_load_fixture.cmo))))

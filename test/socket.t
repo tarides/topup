@@ -43,6 +43,16 @@ A type error surfaces via the eval payload's `error.message`.
   $ ./socket_client.bc.exe topup.sock eval "x +. 1.0;;"
   ERROR: The value x has type int but an expression was expected of type float
 
+`load` dynlinks a bytecode `.cma`; the loaded module is reachable from
+a subsequent connection.
+
+  $ ./socket_client.bc.exe topup.sock load "$PWD/fixtures/topup_load_fixture/topup_load_fixture.cma"
+  ok
+  $ ./socket_client.bc.exe topup.sock eval "Topup_load_fixture.answer;;"
+  42
+  $ ./socket_client.bc.exe topup.sock eval "Topup_load_fixture.greet \"socket\";;"
+  "hi from fixture, socket"
+
 `reset` discards user state; `env` afterwards is empty.
 
   $ ./socket_client.bc.exe topup.sock reset

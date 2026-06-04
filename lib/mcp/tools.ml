@@ -31,6 +31,9 @@ let env_schema =
 let lookup_schema =
   object_schema ~required:[ "name" ] [ ("name", string_prop) ]
 
+let load_schema =
+  object_schema ~required:[ "path" ] [ ("path", string_prop) ]
+
 let empty_schema = object_schema []
 
 let descriptors : Yojson.Safe.t list =
@@ -63,6 +66,20 @@ let descriptors : Yojson.Safe.t list =
     tool_def ~name:"cancel"
       ~description:"Interrupt the currently-running evaluation."
       ~schema:empty_schema;
+    tool_def ~name:"load"
+      ~description:
+        "Dynlink a bytecode archive (.cma) or object file (.cmo) into the \
+         live toplevel session. The driver is bytecode-only, so .cmxs is \
+         not accepted; use a .cma instead. Pass an absolute path; the \
+         directory of the path is added to the toplevel's load path so the \
+         .cmi sitting next to the .cma is discoverable. Loaded modules \
+         become available to subsequent eval calls under their compilation \
+         unit names. Returns the same JSON shape as eval. Note: Toploop's \
+         #load currently swallows file-not-found errors silently — confirm \
+         the load worked by referencing a binding via eval. Loaded \
+         archives are NOT replayed on reset and are NOT recorded in the \
+         persistent phrase log; re-issue load after reset."
+      ~schema:load_schema;
   ]
 
 let json_of_phase = function
@@ -186,6 +203,16 @@ let dispatch session name (args : Yojson.Safe.t) : Yojson.Safe.t =
     | "cancel" ->
         Session.cancel session;
         text_result "ok"
+    | "load" -> (
+        match get_string args "path" with
+        | None -> text_result ~is_error:true "missing 'path' argument"
+        | Some path ->
+            let dir = Filename.dirname path in
+            let phrase =
+              Printf.sprintf "#directory %S;;\n#load %S;;" dir path
+            in
+            let r = Session.eval session phrase in
+            json_result (json_of_eval_result r))
     | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
   with exn ->
     text_result ~is_error:true

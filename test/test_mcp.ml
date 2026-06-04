@@ -81,7 +81,7 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 5 -> ()
+       | `List tools when List.length tools = 6 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
@@ -148,6 +148,46 @@ let test_initialize_list_call () =
       (match get_in payload2 [ "stdout_overflow"; "total_bytes" ] with
        | `Int n when n >= 20000 -> ()
        | _ -> fail "stdout_overflow.total_bytes wrong");
+      let call_load path =
+        let params =
+          `Assoc
+            [
+              ("name", `String "load");
+              ("arguments", `Assoc [ ("path", `String path) ]);
+            ]
+        in
+        Mcp.Rpc.write_message oc (request 5 "tools/call" ~params ());
+        read_response_id ic
+      in
+      let text_of resp =
+        match get_in resp [ "result"; "content" ] with
+        | `List [ `Assoc fs ] -> (
+            match List.assoc_opt "text" fs with
+            | Some (`String s) -> s
+            | _ -> fail "no text in content")
+        | _ -> fail "content shape"
+      in
+      let fixture_cma =
+        Filename.concat (Sys.getcwd ())
+          "fixtures/topup_load_fixture/topup_load_fixture.cma"
+      in
+      if not (Sys.file_exists fixture_cma) then
+        fail ("fixture cma missing: " ^ fixture_cma);
+      let r_load = call_load fixture_cma in
+      let payload_load = Yojson.Safe.from_string (text_of r_load) in
+      (match get_in payload_load [ "error" ] with
+       | `Null -> ()
+       | _ -> fail "load fixture: unexpected error");
+      let r_use = call_eval "Topup_load_fixture.answer;;" in
+      let payload_use = Yojson.Safe.from_string (text_of r_use) in
+      (match get_in payload_use [ "value_repr" ] with
+       | `String "42" -> ()
+       | _ -> fail "loaded fixture's answer != 42");
+      let r_bad = call_load "/definitely/not/a/real/path.cma" in
+      let payload_bad = Yojson.Safe.from_string (text_of r_bad) in
+      (match payload_bad with
+       | `Assoc _ -> ()
+       | _ -> fail "load bad path: malformed payload");
       ())
 
 let () =

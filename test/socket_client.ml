@@ -106,6 +106,18 @@ let print_reset response =
   let text = extract_text response in
   print_endline text
 
+let print_load response =
+  let payload = Yojson.Safe.from_string (extract_text response) in
+  match get_field payload "error" with
+  | Some (`Assoc fs) ->
+      let msg =
+        match List.assoc_opt "message" fs with
+        | Some (`String s) -> s
+        | _ -> "(no message)"
+      in
+      print_endline ("ERROR: " ^ msg)
+  | _ -> print_endline "ok"
+
 let do_call ~path ~name ~args ~handle =
   let ic, oc = connect path in
   send_line oc (Yojson.Safe.to_string (envelope ~name ~args));
@@ -136,6 +148,10 @@ let () =
         ~handle:print_lookup
   | [ _; path; "reset" ] ->
       do_call ~path ~name:"reset" ~args:(`Assoc []) ~handle:print_reset
+  | [ _; path; "load"; cma ] ->
+      do_call ~path ~name:"load"
+        ~args:(`Assoc [ ("path", `String cma) ])
+        ~handle:print_load
   | _ ->
       prerr_endline "usage:";
       prerr_endline
@@ -144,4 +160,5 @@ let () =
       prerr_endline "  socket_client.exe <path> env [filter]";
       prerr_endline "  socket_client.exe <path> lookup <name>";
       prerr_endline "  socket_client.exe <path> reset";
+      prerr_endline "  socket_client.exe <path> load <cma-path>";
       exit 2
