@@ -1,5 +1,6 @@
 (library
  (name topup)
  (public_name topup)
- (modes byte)
- (libraries compiler-libs.toplevel findlib.top unix threads.posix))
+ (modes byte native)
+ (virtual_modules eval_backend)
+ (libraries compiler-libs.common unix threads.posix))

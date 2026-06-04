@@ -1,0 +1,5 @@
+(library
+ (name topup_entry)
+ (public_name topup.entry)
+ (modes byte native)
+ (libraries topup mcp))

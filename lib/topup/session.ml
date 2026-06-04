@@ -30,11 +30,7 @@ type t = {
 let initialized = ref false
 
 let init_findlib () =
-  try
-    Findlib.init ();
-    Topfind.add_predicates [ "byte"; "toploop" ];
-    Topfind.log := ignore
-  with _ -> ()
+  try Eval_backend.init_findlib () with _ -> ()
 
 let ensure_parent_dir path =
   let dir = Filename.dirname path in
@@ -86,7 +82,7 @@ let log_phrase t source =
 
 let create ?log_path ?checkpoint_dir () =
   if not !initialized then begin
-    Toploop.initialize_toplevel_env ();
+    Eval_backend.initialize_toplevel_env ();
     Pretty.configure_toploop ();
     init_findlib ();
     Sys.catch_break true;
@@ -148,8 +144,8 @@ let cancelled_error reason =
 
 let eval ?timeout t source =
   let last_outcome = ref None in
-  let prev_print = !Toploop.print_out_phrase in
-  Toploop.print_out_phrase := (fun _ppf p -> last_outcome := Some p);
+  let prev_print = !Eval_backend.print_out_phrase in
+  Eval_backend.print_out_phrase := (fun _ppf p -> last_outcome := Some p);
   let value_repr = ref None in
   let ty = ref None in
   let error = ref None in
@@ -170,7 +166,7 @@ let eval ?timeout t source =
     try
       while true do
         let phrase =
-          try !Toploop.parse_toplevel_phrase lexbuf
+          try !Eval_backend.parse_toplevel_phrase lexbuf
           with
           | End_of_file -> raise Stop
           | exn ->
@@ -179,7 +175,7 @@ let eval ?timeout t source =
         in
         last_outcome := None;
         (try
-           let _ : bool = Toploop.execute_phrase true sink phrase in
+           let _ : bool = Eval_backend.execute_phrase true sink phrase in
            match !last_outcome with
            | Some (Ophr_exception (Sys.Break, _)) ->
                let reason =
@@ -213,7 +209,7 @@ let eval ?timeout t source =
   let (), out, err = Capture.with_capture do_eval in
   Atomic.set done_flag true;
   Option.iter Thread.join wd;
-  Toploop.print_out_phrase := prev_print;
+  Eval_backend.print_out_phrase := prev_print;
   t.history <- source :: t.history;
   if !error = None then log_phrase t source;
   let value_repr_out, value_repr_overflow =
@@ -255,7 +251,7 @@ let is_user_origin t (file : string) =
   || match t.log_path with Some p -> file = p | None -> false
 
 let env ?filter ?(all = false) t : binding list =
-  let env = !Toploop.toplevel_env in
+  let env = !Eval_backend.toplevel_env in
   let bindings =
     Env.fold_values
       (fun name _path (vd : Types.value_description) acc ->
@@ -284,7 +280,7 @@ let env ?filter ?(all = false) t : binding list =
       List.filter (fun b -> String.starts_with ~prefix b.name) bindings
 
 let lookup _t name : binding option =
-  let env = !Toploop.toplevel_env in
+  let env = !Eval_backend.toplevel_env in
   match Env.find_value_by_name (Longident.Lident name) env with
   | exception Not_found -> None
   | _path, vd ->
@@ -297,7 +293,7 @@ let lookup _t name : binding option =
         }
 
 let reset t =
-  Toploop.initialize_toplevel_env ();
+  Eval_backend.initialize_toplevel_env ();
   t.history <- []
 
 let cancel t =

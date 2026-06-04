@@ -3,4 +3,13 @@
  (public_name topup)
  (package topup)
  (modes byte_complete)
- (libraries topup mcp))
+ (modules main)
+ (libraries topup_entry topup_eval_byte))
+
+(executable
+ (name main_opt)
+ (public_name topup-opt)
+ (package topup)
+ (modes exe)
+ (modules main_opt)
+ (libraries topup_entry topup_eval_native))

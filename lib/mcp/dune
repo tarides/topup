@@ -1,5 +1,5 @@
 (library
  (name mcp)
  (public_name topup.mcp)
- (modes byte)
+ (modes byte native)
  (libraries topup yojson unix threads.posix))

@@ -70,7 +70,7 @@ Stock `ocaml` is bytecode. For most interactive work that's fine, but for LLM-dr
 Two viable strategies:
 
 1. **`ocamlnat` (native toplevel).** Real, recently improving, historically rough. Worth a fresh evaluation.
-2. **Phrase-level JIT via `ocamlopt -shared` + `Dynlink`.** Keep the driver in bytecode/native; compile each user phrase to a `.cmxs` and `Dynlink` it. ~150 ms compile latency per phrase, native-speed evaluation afterward. Used by Jane Street's [`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin); proven approach.
+2. **Phrase-level native compilation via `ocamlopt -shared` + `Dynlink`.** Compile each user phrase to a `.cmxs` and `Dynlink` it. ~150 ms compile latency per phrase, native-speed evaluation afterward. Used by Jane Street's [`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin); proven approach. Not JIT in the PL-research sense — there is no profile-guided specialization, hot-spot detection, or deoptimization; the same AOT `ocamlopt` pipeline runs at evaluation time instead of from a shell. The shipping driver names follow `ocamlc`/`ocamlopt`: bytecode `topup`, native `topup-opt`.
 
 Default to (2); revisit (1) once `ocamlnat` quality is verified on current OCaml.
 
@@ -91,7 +91,7 @@ This is the same hygiene any LLM code-execution sandbox needs. Not novel.
 
 ## Snapshots are phrase replay, not value Marshal
 
-The obvious implementation of `checkpoint`/`restore` is `Marshal` of the current binding environment. It does not work: Marshal of closures produced by `Dynlink`ed code is unsupported and famously broken ([ocaml/ocaml#5215](https://github.com/ocaml/ocaml/issues/5215)), and the JIT scheme described above produces exactly those closures.
+The obvious implementation of `checkpoint`/`restore` is `Marshal` of the current binding environment. It does not work: Marshal of closures produced by `Dynlink`ed code is unsupported and famously broken ([ocaml/ocaml#5215](https://github.com/ocaml/ocaml/issues/5215)), and the native phrase-compilation scheme above produces exactly those closures.
 
 The realistic mechanism is **replay of the phrase history**, optionally combined with Marshal of values whose types are known to be Marshal-safe (no closures). `checkpoint(label)` records the phrase log up to that point; `restore(label)` spawns a fresh toplevel and replays. This is slower than value-Marshal would be, but it composes cleanly with the "process can die at any time" assumption from sandboxing: recovery is the same code path as branching.
 
@@ -120,8 +120,8 @@ MCP's request/response shape is awkward for long-running phrases and streamed st
 - **`ocaml`** (stock toplevel) — the runtime `topup` wraps. `Toploop.execute_phrase` is the core primitive.
 - **`utop`** (Jérémie Dimino) — library-shaped, embeddable (`UTop_main.interact`), handles partial-input/multi-line phrase boundaries. Considered as a parser dependency, then rejected: LLMs send complete `eval` strings so the as-you-type completeness logic is wasted, and utop drags in Lwt + lambda-term + zed for code we wouldn't use. `topup` calls `compiler-libs` directly.
 - **[`Down`](https://erratique.ch/software/down)** (Daniel Bünzli) — line editing, history, completion *for humans*. Inspiration for the name; orthogonal in function.
-- **[`ocaml-jupyter`](https://github.com/akabe/ocaml-jupyter)** — Jupyter kernel wrapping the toplevel. Closest *protocol* analogue. The wedge over "fork ocaml-jupyter and add an MCP shim" is threefold: (a) checkpoint/restore via phrase replay for branching exploration, (b) `compile_to_binary` promotion, (c) native-JIT default (Jupyter is bytecode). Without those, the right move would in fact be to fork ocaml-jupyter.
-- **[`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin)** (Jane Street, archived) — automated compile-and-Dynlink of `.ml` sources. The JIT strategy for native-speed evaluation builds on this lineage.
+- **[`ocaml-jupyter`](https://github.com/akabe/ocaml-jupyter)** — Jupyter kernel wrapping the toplevel. Closest *protocol* analogue. The wedge over "fork ocaml-jupyter and add an MCP shim" is threefold: (a) checkpoint/restore via phrase replay for branching exploration, (b) `compile_to_binary` promotion, (c) native phrase evaluation available (Jupyter is bytecode-only). Without those, the right move would in fact be to fork ocaml-jupyter.
+- **[`ocaml_plugin`](https://github.com/janestreet/ocaml_plugin)** (Jane Street, archived) — automated compile-and-Dynlink of `.ml` sources. The native phrase-compilation strategy for native-speed evaluation builds on this lineage.
 
 ### Existing MCP servers in the OCaml ecosystem
 
@@ -136,7 +136,7 @@ MCP's request/response shape is awkward for long-running phrases and streamed st
 
 ### Where `topup` fits
 
-The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific niche is empty: the one OCaml MCP server with an eval tool is deliberately stateless, and the `mcp-repl` analogue is R/Python-only. The combination `topup` claims — typed persistence + native JIT + replay checkpoints + compile-to-binary — is not on offer anywhere else, and the typed-recall argument is strictly stronger in OCaml than in any dynamic language.
+The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific niche is empty: the one OCaml MCP server with an eval tool is deliberately stateless, and the `mcp-repl` analogue is R/Python-only. The combination `topup` claims — typed persistence + native phrase compilation + replay checkpoints + compile-to-binary — is not on offer anywhere else, and the typed-recall argument is strictly stronger in OCaml than in any dynamic language.
 
 ## Out of scope (initial)
 
@@ -186,4 +186,4 @@ Open questions, partitioned by what blocks code-writing versus what blocks a use
 - **Pre-warming policy.** Config file, idempotent "ensure-session" tool, or both?
 - **Display hooks.** `#install_printer` works as-is — Toploop embeds the custom printer in the Outcometree before our hook fires, and `!Oprint.out_value` honours it. Open question is only *how* a session declares its standard printers without coupling `topup` to any particular library (e.g. a discovery mechanism or a per-package `topup_printers.ml`).
 - **Per-client sandbox policy.** Differentiate by client identity (mcp-repl's Claude-vs-Codex split), or single configurable policy?
-- **Pooling, checkpoint/replay, multi-protocol frontends, native JIT.** All in the design; none blocks v1.
+- **Pooling, checkpoint/replay, multi-protocol frontends, native phrase compilation.** All in the design; none blocks v1.

@@ -95,13 +95,17 @@ eval   { source: "let rec spin n = spin n;;", timeout: 0.3 }
 
 ## Status
 
-Phase-1 MVP: bytecode toplevel, MCP over stdio (default) or a Unix
-domain socket (`topup --socket <path>` — one client at a time,
-state persists across connections). One MCP registration drives the
-local in-process toplevel plus any number of SSH-tunneled remote
-toplevels, with per-call `host` routing (see
-[MULTIHOST.md](MULTIHOST.md)). `checkpoint`/`restore`, native-JIT,
-pooling, and `compile_to_binary` are deferred — see DESIGN.md.
+Phase-1 MVP: bytecode toplevel (`topup`) plus an opt-in native
+driver (`topup-opt`, phrases compiled with `ocamlopt -shared` and
+Dynlink-loaded — name echoes the `ocamlc`/`ocamlopt` split). MCP
+over stdio (default) or a Unix domain socket (`--socket <path>`,
+one client at a time, state persists across connections). One MCP
+registration drives the local in-process toplevel, named local
+subprocess sessions with pre-warming and replica pools, and any
+number of SSH-tunneled remote toplevels, with per-call `host` /
+`session` routing (see [MULTIHOST.md](MULTIHOST.md)).
+`checkpoint`/`restore` ship for branching exploration.
+`compile_to_binary` is the remaining phase-2 item — see DESIGN.md.
 
 ## AI usage
 

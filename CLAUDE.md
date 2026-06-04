@@ -12,9 +12,35 @@ not use `eval $(opam env)`):
 - `opam exec -- dune runtest --force` — unit + in-process MCP integration
 - `opam reinstall topup --working-dir --yes` — reinstall in current switch
 
-Everything is **bytecode-only** because `compiler-libs.toplevel` ships no
-native implementation. The libraries set `(modes byte)`, the binary uses
-`(modes byte_complete)`. Don't add native modes.
+Two binaries ship from the same source tree:
+
+- **`topup`** — bytecode driver (`byte_complete`). Links
+  `compiler-libs.toplevel`. Default; `Toploop.execute_phrase`
+  evaluates each phrase in bytecode against the persistent typed
+  environment.
+- **`topup-opt`** — native driver (`exe`). Links
+  `compiler-libs.native-toplevel`. Each user phrase is compiled with
+  `ocamlopt -shared` and `Dynlink`-loaded; native-speed evaluation
+  with ~150 ms compile latency per phrase. Opt in by pointing
+  `.mcp.json`'s `command` at `topup-opt`. Name echoes the
+  `ocamlc`/`ocamlopt` split — bytecode vs native backend, no JIT
+  semantics implied.
+
+`lib/topup`, `lib/mcp`, `lib/topup_entry` all build in both modes
+(`(modes byte native)`). The mode-specific toplevel dependency is
+supplied by two virtual-library implementations:
+
+- `lib/topup_eval_byte/` — `(implements topup)` + `compiler-libs.toplevel`.
+- `lib/topup_eval_native/` — `(implements topup)` +
+  `compiler-libs.native-toplevel`. Also flips `Clflags.native_code`
+  and `Clflags.dlcode` before `Toploop.initialize_toplevel_env` so the
+  in-process compiler emits PIC suitable for `Dynlink`.
+
+`lib/topup/eval_backend.mli` is the abstraction Session talks to;
+both implementations expose `let X = Toploop.X` plus a backend-
+specific `init_findlib`. **Do not** call `Toploop.*` directly from
+`lib/topup`; route through `Eval_backend.*` so the same `Session`
+code links into either binary.
 
 ## Layout
 
@@ -29,13 +55,16 @@ lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio or Unix
               execution)
               + Host_registry / Remote_host (per-host SSH tunnels
               and JSON-RPC fan-out for `host:`-routed tool calls)
-bin/main.ml   wires Session + Server to stdin/stdout (default) or
-              to a Unix socket via `--socket <path>`; or runs as a
-              bridge via `--proxy <path>` / `--remote <host>`;
-              reads TOPUP_LOG
+lib/topup_eval_byte/    virtual-lib impl: Toploop = compiler-libs.toplevel
+lib/topup_eval_native/  virtual-lib impl: Toploop = compiler-libs.native-toplevel
+lib/topup_entry/        Entry.run — shared MCP wiring used by both binaries
+bin/main.ml             one-liner: `let () = Topup_entry.Entry.run ()`
+                        (linked against topup_eval_byte → topup binary)
+bin/main_opt.ml         same one-liner, linked against topup_eval_native
+                        → topup-opt binary
 test/         test_session.ml (unit) + test_mcp.ml (in-process MCP)
-              + socket.t, socket_lifecycle.t, proxy.t, checkpoint.t
-              (cram against the binary)
+              + socket.t, socket_lifecycle.t, proxy.t, checkpoint.t,
+              opt.t (cram against the binary; opt.t spawns topup-opt)
 ```
 
 ## Things you need to know to change `Session`
@@ -290,11 +319,15 @@ reserved — every other input is OCaml source.
 
 - **Don't use the `Str` module.** Not yet deprecated but on track. Inline
   helpers for substring search; `re` opam package for richer regex.
-- Don't add native build modes anywhere.
 - Don't put host-identifying paths (usernames, hostnames) in committed
   files. The CLAUDE.md global rule applies here too.
-- Keep `(modes byte)` / `(modes byte_complete)` on all stanzas that
-  transitively depend on `topup`.
+- Keep `(modes byte native)` (or the appropriate single mode) on
+  stanzas under `lib/`; only the binaries are mode-specific
+  (`byte_complete` for `topup`, `exe` for `topup-opt`). When adding a
+  new library that needs the toplevel, route Toploop calls through
+  `Eval_backend` and supply both byte/native implementations — never
+  hard-depend on `compiler-libs.toplevel` or
+  `compiler-libs.native-toplevel` from a generic library.
 
 ## Dogfooding
 
@@ -314,6 +347,15 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"source":"1+2;;"}}}' \
 | _build/default/bin/main.bc.exe
 ```
+
+For the native (`topup-opt`) path, swap the binary:
+
+```
+... | _build/default/bin/main_opt.exe
+```
+
+Same JSON-RPC; the difference is per-phrase `ocamlopt -shared` +
+`Dynlink` underneath `Toploop.execute_phrase`.
 
 ## LLM-in-the-loop smoke test
 
