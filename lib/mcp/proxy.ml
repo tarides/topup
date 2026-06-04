@@ -74,7 +74,13 @@ let random_hex n =
 let default_remote_socket () = "/tmp/topup-" ^ random_hex 16 ^ ".sock"
 let local_socket () = "/tmp/topup-local-" ^ random_hex 16 ^ ".sock"
 
-let run_remote ~host ?remote_socket () =
+type ssh_handle = {
+  ssh_pid : int;
+  local_sock : string;
+  remote_sock : string;
+}
+
+let spawn_ssh ~host ?remote_socket () =
   Random.self_init ();
   let remote_sock =
     match remote_socket with Some p -> p | None -> default_remote_socket ()
@@ -95,9 +101,15 @@ let run_remote ~host ?remote_socket () =
     Unix.create_process "ssh" argv dev_null dev_null Unix.stderr
   in
   (try Unix.close dev_null with _ -> ());
-  at_exit (fun () ->
-      (try Unix.kill ssh_pid Sys.sigterm with _ -> ());
-      (try Unix.unlink local_sock with _ -> ()));
+  { ssh_pid; local_sock; remote_sock }
+
+let kill_ssh handle =
+  (try Unix.kill handle.ssh_pid Sys.sigterm with _ -> ());
+  (try Unix.unlink handle.local_sock with _ -> ())
+
+let run_remote ~host ?remote_socket () =
+  let handle = spawn_ssh ~host ?remote_socket () in
+  at_exit (fun () -> kill_ssh handle);
   let install_exit_on signal =
     try
       Sys.set_signal signal (Sys.Signal_handle (fun _ -> exit 0))
@@ -107,4 +119,4 @@ let run_remote ~host ?remote_socket () =
   install_exit_on Sys.sigint;
   (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore
    with Invalid_argument _ -> ());
-  run_proxy ~socket_path:local_sock ~connect_timeout:20.0 ()
+  run_proxy ~socket_path:handle.local_sock ~connect_timeout:20.0 ()
