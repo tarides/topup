@@ -5,14 +5,37 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## Assess first consumer's actual library needs
+## Remote execution via SSH port forwarding
 
-If the first real consumer needs a large library (mmapped dataset,
-C-stub-heavy bindings) loaded from turn 1, then `load` and pre-warming
-move out of phase-2-deferred and into phase-1-must-ship. Find out
-before sinking more time into deferred work.
+For workloads where the data lives on a different machine than the
+agent (large mmapped corpora on bulk-storage hosts, NVMe-bound runs
+on a compute box), the toplevel should run on the remote and the
+MCP server stays local. Pattern from `tarides/sudo-proxy`: ship a
+static `topup` binary to the remote, then have the MCP server
+spawn `ssh -t -L <local.sock>:<remote.sock> HOST topup-server` and
+route subsequent `eval` / `env` / `lookup` / `reset` / `cancel`
+calls through the forwarded Unix socket transparently. The
+sudo-proxy `start_server({"host": …})` + per-request `host` field
+is the worked example: tunnel setup amortised across many calls,
+TUI/PTY allocated on the remote so stdout streams back unchanged.
 
-DESIGN.md, "Pragmatic / consumer-side".
+Composes with the deferred HTTP / daemon transport: SSH forwards
+Unix sockets natively, so any non-stdio shape unlocks remote mode
+for free. Open questions: per-host session keying (one tunnel per
+host vs. one per session), `forward_agent`-style opt-in for
+fetching private deps on the remote, how `reset` and `cancel`
+behave across a possibly-dead tunnel, where the persistent phrase
+log lives (local mirror vs. remote-only).
+
+DESIGN.md, "Out of scope (initial)" — "Distributed sessions
+(toplevel on a remote host, MCP server local). Possible later;
+first prove local value." Cross-references [[HTTP / daemon
+transport]] above.
+
+Prior art: `tarides/sudo-proxy` README, "Deploying to a remote
+host" and "Usage" sections; in particular the
+`ssh -t -L /tmp/sudo-proxy-HOST.sock:/run/user/$(ssh HOST id -u)/sudo-proxy.sock HOST sudo-proxy`
+recipe and the MCP `start_server` / `execute(host=…)` shape.
 
 ## `load(path)` — Dynlink a .cmxs plugin
 
@@ -32,17 +55,6 @@ batch vs. continue-on-error with per-phrase results.
 
 DESIGN.md, "Can defer (phase-2 or later)".
 
-## Phrase-level JIT via `ocamlopt -shared` + Dynlink
-
-Native-speed evaluation for the workloads the externalized-memory
-thesis is actually designed for (search indices, parsed corpora,
-log analysis). Compile each phrase to `.cmxs`, `Dynlink` it, keep the
-driver bytecode. Lifts the current bytecode-only constraint for *user
-phrases* without making the driver native.
-
-DESIGN.md, "Native-speed evaluation"; phase-1 implementation choice
-"Driver model".
-
 ## Checkpoint / restore via phrase replay
 
 `checkpoint(label)` records the phrase log up to that point;
@@ -52,17 +64,6 @@ Dynlinked closures is broken (ocaml/ocaml#5215), so replay is the
 only honest option.
 
 DESIGN.md, phase-2 tool table; "Snapshots" section.
-
-## `compile_to_binary(entry, out)`
-
-Promote a stable query out of the toplevel: serialize phrases
-reachable from `entry`, freeze the binding environment, emit a
-standalone `.ml`, build with dune, produce a native binary. The
-exploration → production path that keeps `topup` honest. Selection
-strategy (source-reachability vs. user-curation) is a real design
-question, not an implementation detail.
-
-DESIGN.md, phase-2 tool table; "What the LLM gets".
 
 ## Session pooling + pre-warming
 
@@ -74,15 +75,27 @@ takes precedence).
 
 DESIGN.md, "Session pooling and routing".
 
-## Jupyter kernel frontend
+## Phrase-level JIT via `ocamlopt -shared` + Dynlink
 
-The toplevel core is already a library. A Jupyter frontend slots in
-beside `topup-mcp`: streamed stdout, async display, interrupt — all
-native to the protocol. Looks straightforward; worth doing once the
-core stabilises.
+Native-speed evaluation for the workloads the externalized-memory
+thesis is actually designed for (search indices, parsed corpora,
+log analysis). Compile each phrase to `.cmxs`, `Dynlink` it, keep the
+driver bytecode. Lifts the current bytecode-only constraint for *user
+phrases* without making the driver native.
 
-DESIGN.md, "Protocol: MCP, Jupyter, or both"; phase-1 implementation
-choice "Code structure".
+DESIGN.md, "Native-speed evaluation"; phase-1 implementation choice
+"Driver model".
+
+## `compile_to_binary(entry, out)`
+
+Promote a stable query out of the toplevel: serialize phrases
+reachable from `entry`, freeze the binding environment, emit a
+standalone `.ml`, build with dune, produce a native binary. The
+exploration → production path that keeps `topup` honest. Selection
+strategy (source-reachability vs. user-curation) is a real design
+question, not an implementation detail.
+
+DESIGN.md, phase-2 tool table; "What the LLM gets".
 
 ## Direct CLI / pipe frontend
 
@@ -118,6 +131,16 @@ Options: a discovery mechanism, a per-package `topup_printers.ml`
 convention.
 
 DESIGN.md, "Can defer (phase-2 or later)".
+
+## Jupyter kernel frontend
+
+The toplevel core is already a library. A Jupyter frontend slots in
+beside `topup-mcp`: streamed stdout, async display, interrupt — all
+native to the protocol. Looks straightforward; worth doing once the
+core stabilises.
+
+DESIGN.md, "Protocol: MCP, Jupyter, or both"; phase-1 implementation
+choice "Code structure".
 
 ## HTTP / daemon transport
 
@@ -180,38 +203,6 @@ early rather than at user runtime.
 
 Prior art: Merlin opam versions list; ppxlib compatibility docs;
 ocamlformat-lib opam constraint; ocaml-jupyter's `jupyter.opam`.
-
-## Remote execution via SSH port forwarding
-
-For workloads where the data lives on a different machine than the
-agent (large mmapped corpora on bulk-storage hosts, NVMe-bound runs
-on a compute box), the toplevel should run on the remote and the
-MCP server stays local. Pattern from `tarides/sudo-proxy`: ship a
-static `topup` binary to the remote, then have the MCP server
-spawn `ssh -t -L <local.sock>:<remote.sock> HOST topup-server` and
-route subsequent `eval` / `env` / `lookup` / `reset` / `cancel`
-calls through the forwarded Unix socket transparently. The
-sudo-proxy `start_server({"host": …})` + per-request `host` field
-is the worked example: tunnel setup amortised across many calls,
-TUI/PTY allocated on the remote so stdout streams back unchanged.
-
-Composes with the deferred HTTP / daemon transport: SSH forwards
-Unix sockets natively, so any non-stdio shape unlocks remote mode
-for free. Open questions: per-host session keying (one tunnel per
-host vs. one per session), `forward_agent`-style opt-in for
-fetching private deps on the remote, how `reset` and `cancel`
-behave across a possibly-dead tunnel, where the persistent phrase
-log lives (local mirror vs. remote-only).
-
-DESIGN.md, "Out of scope (initial)" — "Distributed sessions
-(toplevel on a remote host, MCP server local). Possible later;
-first prove local value." Cross-references [[HTTP / daemon
-transport]] above.
-
-Prior art: `tarides/sudo-proxy` README, "Deploying to a remote
-host" and "Usage" sections; in particular the
-`ssh -t -L /tmp/sudo-proxy-HOST.sock:/run/user/$(ssh HOST id -u)/sudo-proxy.sock HOST sudo-proxy`
-recipe and the MCP `start_server` / `execute(host=…)` shape.
 
 ## Multi-connection socket transport with serialized dispatch
 

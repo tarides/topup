@@ -3,6 +3,21 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — Resolve first-consumer library-needs assessment
+
+Closed the backlog assessment question. The first real consumer
+needs a large mmap/FFI-heavy library loaded from turn 1, so by the
+item's own text `load(path)` and session pre-warming are no longer
+phase-2-deferred — they are phase-1-must-ship. Backlog reordered
+accordingly: `load` at position 2, session pooling + pre-warming
+bumped from position 7 to position 5 (sitting right after Checkpoint
+/ restore, which it depends on for cheap replay-based branching).
+Same reorder also surfaced Remote execution via SSH port forwarding
+to position 1 and swapped Checkpoint above JIT.
+
+- `backlog.md` — assessment item removed; top of the backlog
+  reordered; no implementation change.
+
 ## 2026-06-04 — Server-crash-on-malformed-input fix
 
 Closed the top backlog item, opened earlier the same day by the
