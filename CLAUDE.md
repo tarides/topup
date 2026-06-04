@@ -25,10 +25,15 @@ lib/topup/    Session API around Toploop (eval, env, lookup, reset, cancel)
               + Error (Location.error_of_exn → structured JSON)
 lib/mcp/      newline-delimited JSON-RPC 2.0 over stdio or Unix
               socket: Rpc, Server (run + serve_unix), Tools
-bin/main.ml   wires Session + Server to stdin/stdout (default) or to
-              a Unix socket via `--socket <path>`; reads TOPUP_LOG
+              + Proxy (stdio↔socket bridge, SSH wrapper for remote
+              execution)
+bin/main.ml   wires Session + Server to stdin/stdout (default) or
+              to a Unix socket via `--socket <path>`; or runs as a
+              bridge via `--proxy <path>` / `--remote <host>`;
+              reads TOPUP_LOG
 test/         test_session.ml (unit) + test_mcp.ml (in-process MCP)
-              + socket.t, socket_lifecycle.t (cram against the binary)
+              + socket.t, socket_lifecycle.t, proxy.t (cram against
+              the binary)
 ```
 
 ## Things you need to know to change `Session`
@@ -104,6 +109,63 @@ recurse until stack overflow. Don't remove this guard.
   spawn.
 - The five MCP tools are deferred — load schemas via
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
+
+## Remote execution
+
+Two flags layer to put the toplevel on another host:
+
+- `topup --proxy <socket-path>` — stdio↔Unix-socket bridge.
+  Bidirectional byte pump from stdin/stdout to the named socket. The
+  socket is connected with a retry loop (default 10 s) so the bridge
+  rides out the case where the peer hasn't bound the path yet. No
+  JSON parsing: framing is the wire's responsibility.
+
+- `topup --remote <host> [--remote-socket <path>]` — convenience
+  wrapper around `--proxy`. Spawns
+  `ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+       -L <local.sock>:<remote.sock> <host> \
+       topup --socket <remote.sock>`
+  as a child, then drives the proxy against the local end of the
+  forward. `<local.sock>` is randomized in `/tmp`; `<remote.sock>`
+  defaults to `/tmp/topup-<random>.sock`. Pin `--remote-socket` if
+  you want reconnects to land on the same session. `at_exit` kills
+  the SSH child and unlinks the local socket; SIGTERM/SIGINT
+  handlers call `exit 0` so the cleanup fires under shell
+  termination.
+
+The remote side is the same `topup --socket` binary — no special
+build. Install topup on the remote host in advance (`opam install
+topup`); the local proxy does the rest.
+
+Manual smoke (not CI-gated; same tier as the LLM-in-the-loop smoke):
+
+```
+ssh-copy-id <host>              # one-time
+opam reinstall topup --working-dir --yes
+
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+  | _build/default/bin/main.bc.exe --remote <host>
+```
+
+Expect: an `initialize` response with `serverInfo.name = "topup"`,
+and a `topup --socket /tmp/topup-*.sock` process visible on the
+remote. Killing the local proxy unlinks the local socket and
+disconnects SSH, which terminates the remote process.
+
+Known limitations:
+
+- **Phrase log + spill files are remote-only.** The remote `topup`
+  writes its log and spill files under the remote user's `$HOME`.
+  The local agent's `Read` tool cannot reach them.
+- **Dead tunnel = local proxy exits.** No auto-reconnect. Restart
+  the MCP client to reconnect; with `--remote-socket` pinned, the
+  surviving remote daemon keeps the session.
+- **One tunnel per `--remote` invocation.** Multiple sessions on
+  the same host need multiple `.mcp.json` entries with distinct
+  `--remote-socket` paths.
+- **Cancel works through the tunnel.** `notifications/cancelled`
+  flows as any other message; `Session.cancel` delivers SIGINT to
+  the remote `main_pid`.
 
 ## `/caml` skill
 

@@ -3,6 +3,78 @@
 Completed work, most recent at top. See `backlog.md` for pending work
 and `.claude/skills/session-backlog/SKILL.md` for the workflow.
 
+## 2026-06-04 — Remote execution via SSH port forwarding
+
+Closed the top backlog item. Two new flags on the `topup` binary
+layer to put the toplevel on another host:
+
+- `topup --proxy <socket-path>` — stdio↔Unix-socket bridge.
+  Bidirectional byte pump from stdin/stdout to the named socket
+  with a 10 s connect-retry loop that rides out the case where the
+  peer hasn't bound the path yet. No JSON parsing; framing is the
+  wire's responsibility.
+- `topup --remote <host> [--remote-socket <path>]` — convenience
+  wrapper. Spawns `ssh -o ExitOnForwardFailure=yes -o
+  ServerAliveInterval=30 -L <local.sock>:<remote.sock> <host>
+  topup --socket <remote.sock>` and drives the proxy against the
+  local end. `<local.sock>` is randomized in `/tmp`; `<remote.sock>`
+  defaults to `/tmp/topup-<random>.sock` so reconnects without a
+  pinned path land on a fresh session. `at_exit` kills the SSH
+  child and unlinks the local socket; SIGTERM/SIGINT handlers call
+  `exit 0` so the cleanup fires under shell termination.
+
+The remote side is the **unchanged** `topup --socket` binary
+already shipped 2026-06-03 — no new binary, no special build.
+Deployment is `opam install topup` on the remote ahead of time.
+The `--proxy` half is testable without SSH, so the cram fixture
+covers it directly; the `--remote` SSH lifecycle is verified by
+manual smoke per CLAUDE.md (operational tier, not CI-gated).
+
+Files:
+
+- `lib/mcp/proxy.{ml,mli}` — new module: `run_proxy` (the bridge,
+  two `Thread.create` copy loops with a shared socket) and
+  `run_remote` (the SSH wrapper, `Unix.create_process` + `at_exit`
+  cleanup chain). 100 LOC; mirrors `Capture.with_capture`'s
+  drain-thread idiom and `Server.serve_unix`'s signal/at_exit
+  handling.
+- `lib/mcp/dune` — added `threads.posix` to the library deps for
+  the proxy's `Thread` use (already transitive via `topup`, now
+  explicit).
+- `bin/main.ml` — argv extended with `--proxy` and `--remote`
+  branches; refactored so `Session.create` only runs in
+  server-side modes (no longer wipes the local spill dir when the
+  binary is invoked purely as a client-side bridge). Usage line
+  now: `usage: topup-mcp [--socket <path> | --proxy <path> |
+  --remote <host> [--remote-socket <path>]]`.
+- `test/proxy.t` (new) — drives `topup --proxy` against a local
+  `topup --socket` daemon via raw JSON-RPC pipes. Asserts the
+  initialize round-trip, cross-invocation state persistence (bind
+  `x` in one proxy invocation, read it back in another), batched
+  requests on a single connection, and socket cleanup.
+- `test/socket_lifecycle.t` — updated the bad-argv expected
+  output to match the new usage line.
+- `DESIGN.md` — removed "Distributed sessions (toplevel on a
+  remote host, MCP server local). Possible later; first prove
+  local value." from "Out of scope (initial)" since it now ships.
+- `CLAUDE.md` — new "Remote execution" subsection (usage, manual
+  SSH smoke recipe, known limitations); layout description and
+  `bin/main.ml` summary updated.
+
+Known limitations carried forward as documentation, not future
+work in v1:
+
+- Phrase log + spill files are remote-only. Local agent's `Read`
+  cannot reach them. Future work: rsync mirror or a download MCP
+  tool.
+- Dead tunnel = local proxy exits. No auto-reconnect.
+- One tunnel per `--remote` invocation.
+- Cancel works through the tunnel via `notifications/cancelled`;
+  `Session.cancel` delivers SIGINT to the remote `main_pid`.
+
+`dune build @all` and `dune runtest --force` green; the bridge
+smoke-tested by piping JSON-RPC through the binary directly.
+
 ## 2026-06-04 — Resolve first-consumer library-needs assessment
 
 Closed the backlog assessment question. The first real consumer

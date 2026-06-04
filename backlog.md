@@ -5,38 +5,6 @@ ideas that arise mid-session get appended to the **end**, never inserted
 ahead of the current task. See `.claude/skills/session-backlog/SKILL.md`
 for the workflow.
 
-## Remote execution via SSH port forwarding
-
-For workloads where the data lives on a different machine than the
-agent (large mmapped corpora on bulk-storage hosts, NVMe-bound runs
-on a compute box), the toplevel should run on the remote and the
-MCP server stays local. Pattern from `tarides/sudo-proxy`: ship a
-static `topup` binary to the remote, then have the MCP server
-spawn `ssh -t -L <local.sock>:<remote.sock> HOST topup-server` and
-route subsequent `eval` / `env` / `lookup` / `reset` / `cancel`
-calls through the forwarded Unix socket transparently. The
-sudo-proxy `start_server({"host": …})` + per-request `host` field
-is the worked example: tunnel setup amortised across many calls,
-TUI/PTY allocated on the remote so stdout streams back unchanged.
-
-Composes with the deferred HTTP / daemon transport: SSH forwards
-Unix sockets natively, so any non-stdio shape unlocks remote mode
-for free. Open questions: per-host session keying (one tunnel per
-host vs. one per session), `forward_agent`-style opt-in for
-fetching private deps on the remote, how `reset` and `cancel`
-behave across a possibly-dead tunnel, where the persistent phrase
-log lives (local mirror vs. remote-only).
-
-DESIGN.md, "Out of scope (initial)" — "Distributed sessions
-(toplevel on a remote host, MCP server local). Possible later;
-first prove local value." Cross-references [[HTTP / daemon
-transport]] above.
-
-Prior art: `tarides/sudo-proxy` README, "Deploying to a remote
-host" and "Usage" sections; in particular the
-`ssh -t -L /tmp/sudo-proxy-HOST.sock:/run/user/$(ssh HOST id -u)/sudo-proxy.sock HOST sudo-proxy`
-recipe and the MCP `start_server` / `execute(host=…)` shape.
-
 ## `load(path)` — Dynlink a .cmxs plugin
 
 First phase-2 tool. Let the model bring a library into scope without

@@ -141,7 +141,6 @@ The general "stateful REPL-as-MCP" pattern is validated. The OCaml-specific nich
 ## Out of scope (initial)
 
 - Multi-user concurrent access. One LLM, one session, one toplevel process. Pool spawning is internal, not user-exposed.
-- Distributed sessions (toplevel on a remote host, MCP server local). Possible later; first prove local value.
 - Non-OCaml backends. Name is `topup`, scope is OCaml. A future `topup-py`, `topup-rs` could share protocol but not implementation.
 
 ## Decided

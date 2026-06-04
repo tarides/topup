@@ -3,10 +3,10 @@ Argv parsing and socket-file lifecycle.
 Bad invocations exit 2 with a usage line.
 
   $ topup --bogus
-  usage: topup-mcp [--socket <path>]
+  usage: topup-mcp [--socket <path> | --proxy <path> | --remote <host> [--remote-socket <path>]]
   [2]
   $ topup --socket
-  usage: topup-mcp [--socket <path>]
+  usage: topup-mcp [--socket <path> | --proxy <path> | --remote <host> [--remote-socket <path>]]
   [2]
 
 Boot a daemon and confirm the socket is bound.
