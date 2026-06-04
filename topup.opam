@@ -7,6 +7,8 @@ description:
 maintainer: ["Cuihtlauac ALVARADO <cuihtlauac@tarides.com>"]
 authors: ["Cuihtlauac ALVARADO <cuihtlauac@tarides.com>"]
 license: "ISC"
+homepage: "https://github.com/tarides/topup"
+bug-reports: "https://github.com/tarides/topup/issues"
 depends: [
   "ocaml" {>= "5.1"}
   "dune" {>= "3.6"}
@@ -28,3 +30,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
+dev-repo: "git+https://github.com/tarides/topup.git"

@@ -10,6 +10,10 @@
 (authors "Cuihtlauac ALVARADO <cuihtlauac@tarides.com>")
 (maintainers "Cuihtlauac ALVARADO <cuihtlauac@tarides.com>")
 (license ISC)
+(source
+ (github tarides/topup))
+(homepage "https://github.com/tarides/topup")
+(bug_reports "https://github.com/tarides/topup/issues")
 
 (package
  (name topup)

@@ -47,6 +47,23 @@ Or drop a project-local `.mcp.json` at the repo root:
 
 Restart Claude Code (or run `/mcp` → Reconnect) so the new server is picked up.
 
+### Optional: the `/caml` slash command
+
+This repo ships a small Claude Code skill that wraps the five MCP
+tools behind `/caml`. It is project-scoped (lives under
+`.claude/skills/caml/`) so it activates automatically when Claude
+Code is run inside a `topup` checkout. To use it from anywhere,
+copy it to your user-scope skills directory:
+
+```
+mkdir -p ~/.claude/skills/caml
+cp .claude/skills/caml/SKILL.md ~/.claude/skills/caml/SKILL.md
+```
+
+Then `/caml 1 + 1;;`, `/caml #env`, `/caml #reset`, etc. work from
+any project. The skill calls `mcp__topup__*` directly, so the
+`topup` MCP server must still be registered.
+
 ## Tools
 
 | Tool | Effect |
