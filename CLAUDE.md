@@ -235,7 +235,7 @@ Implementation shape:
 - Writes are atomic (`<path>.tmp` + `Unix.rename`) on both sides.
 
 For chunked / streaming transfer (>16 MiB) or for in-toplevel
-primitives like `Topup.read_local` / `Topup.write_local` callable
+primitives like `Topup.read_back` / `Topup.write_back` callable
 inside `eval`, see backlog: the latter requires a bidirectional
 JSON-RPC muxer on the SSH tunnel, which is a much larger lift than
 this forward-only path.
