@@ -13,4 +13,11 @@ let max_printer_steps = Toploop.max_printer_steps
 let init_findlib () =
   Findlib.init ();
   Topfind.add_predicates [ "native"; "toploop" ];
-  Topfind.log := ignore
+  Topfind.log := ignore;
+  (* Same as the bytecode backend; see comment there. *)
+  Topfind.don't_load_deeply [ "topup.runtime" ]
+
+let prepare_topup_runtime () =
+  match Findlib.package_directory "topup.runtime" with
+  | dir -> Topdirs.dir_directory dir
+  | exception _ -> ()

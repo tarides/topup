@@ -102,6 +102,31 @@ before any bytes are read, so an oversized `push_file` fails
 fast. Local and remote writes are atomic (`.tmp` + `rename`); a
 crash mid-transfer cannot leave a partial file at the destination.
 
+### In-phrase access from inside `eval` (`Topup.read_back` / `Topup.write_back`)
+
+`push_file` / `pull_file` are *between-phrase* moves the chatbot
+orchestrates. For *mid-phrase* access — a routed `eval` that wants
+to inline `let xs = Topup.read_back "boundary.csv" |> ...` — two
+OCaml functions are available in scope:
+
+```ocaml
+val Topup.read_back  : string -> bytes
+val Topup.write_back : string -> bytes -> unit
+```
+
+The path is interpreted on the **chatbot's machine** (the
+MCP-server-local filesystem), regardless of which host the eval
+is routed to. Under the hood the remote daemon's `Topup_runtime`
+hook reaches back over the same SSH-forwarded socket via JSON-RPC.
+
+Same cap (`TOPUP_XFER_MAX_BYTES`, 16 MiB) and same atomic-write
+semantics as `push_file`/`pull_file`.
+
+Requires `topup ≥ 0.1.x` on the remote (older daemons predate the
+back-channel handshake and will simply fall through to direct
+file I/O on the remote's own filesystem — which is almost
+certainly not what you want, so version-match the daemons).
+
 ## `/caml --host=<name>` (slash command)
 
 If you use the `/caml` skill, append `--host=<name>` to route a

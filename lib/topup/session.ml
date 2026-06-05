@@ -80,6 +80,56 @@ let log_phrase t source =
           close_out oc
         with _ -> ())
 
+(* Prelude evaluated at session create and after every [reset]:
+   makes [Topup_runtime] visible to the user under the conventional
+   name [Topup]. The implementation is already statically linked
+   into the binary; the .cmi search path is added by
+   [Eval_backend.prepare_topup_runtime] before this runs. *)
+let prelude_source = "module Topup = Topup_runtime;;"
+
+(* Drives [Eval_backend.execute_phrase] over a literal source string
+   without any of [eval]'s machinery (no capture, no spill, no
+   history append, no log). Used for the session prelude where any
+   failure is fatal and there is nothing user-visible to capture. *)
+let exec_silent_phrase source : (unit, string) result =
+  let lexbuf = Lexing.from_string source in
+  Location.init lexbuf "<prelude>";
+  let sink = Format.formatter_of_buffer (Buffer.create 0) in
+  let prev_print = !Eval_backend.print_out_phrase in
+  let err = ref None in
+  Eval_backend.print_out_phrase :=
+    (fun _ppf -> function
+      | Outcometree.Ophr_exception (exn, _) ->
+          if !err = None then err := Some (Printexc.to_string exn)
+      | _ -> ());
+  let finished = ref false in
+  (try
+     while not !finished do
+       let phrase =
+         try !Eval_backend.parse_toplevel_phrase lexbuf
+         with End_of_file -> raise Exit
+       in
+       try
+         let _ : bool = Eval_backend.execute_phrase true sink phrase in
+         if !err <> None then raise Exit
+       with
+       | Exit -> raise Exit
+       | exn ->
+           if !err = None then err := Some (Printexc.to_string exn);
+           raise Exit
+     done
+   with Exit -> finished := true);
+  Eval_backend.print_out_phrase := prev_print;
+  match !err with None -> Ok () | Some msg -> Error msg
+
+let install_prelude () =
+  Eval_backend.prepare_topup_runtime ();
+  match exec_silent_phrase prelude_source with
+  | Ok () -> ()
+  | Error msg ->
+      failwith
+        ("Session prelude failed (is topup.runtime installed?): " ^ msg)
+
 let create ?log_path ?checkpoint_dir () =
   if not !initialized then begin
     Eval_backend.initialize_toplevel_env ();
@@ -88,6 +138,7 @@ let create ?log_path ?checkpoint_dir () =
     Sys.catch_break true;
     initialized := true
   end;
+  install_prelude ();
   (match checkpoint_dir with
    | None -> ()
    | Some dir -> (try mkdir_p dir with _ -> ()));
@@ -294,7 +345,8 @@ let lookup _t name : binding option =
 
 let reset t =
   Eval_backend.initialize_toplevel_env ();
-  t.history <- []
+  t.history <- [];
+  install_prelude ()
 
 let cancel t =
   try Unix.kill t.main_pid Sys.sigint with _ -> ()

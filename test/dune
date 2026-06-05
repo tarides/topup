@@ -2,7 +2,8 @@
  (names test_session test_mcp)
  (modes byte)
  (modules test_session test_mcp)
- (libraries topup topup_eval_byte mcp unix threads.posix)
+ (link_flags (:standard -linkall))
+ (libraries topup topup_eval_byte mcp topup_runtime unix threads.posix)
  (deps fixtures/topup_load_fixture/topup_load_fixture.cma))
 
 (executable

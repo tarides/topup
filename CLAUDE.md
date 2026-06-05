@@ -234,16 +234,78 @@ Implementation shape:
   create — these are explicit artefacts).
 - Writes are atomic (`<path>.tmp` + `Unix.rename`) on both sides.
 
-For chunked / streaming transfer (>16 MiB) or for in-toplevel
-primitives like `Topup.read_back` / `Topup.write_back` callable
-inside `eval`, see backlog: the latter requires a bidirectional
-JSON-RPC muxer on the SSH tunnel, which is a much larger lift than
-this forward-only path.
+For chunked / streaming transfer (>16 MiB), see backlog
+"Streaming / paged eval results".
 
 Test hook for cram fixtures: setting
 `TOPUP_HOST_SOCKET_<HOST>=/path/to/sock` (with `<HOST>`
 uppercased) makes `start_session { host: "<host>" }` skip the SSH
 spawn and connect to the named local socket directly. Test-only.
+
+## In-phrase boundary crossing (`Topup.read_back` / `Topup.write_back`)
+
+Two OCaml functions usable from inside an `eval`'d phrase that
+reach back to the MCP-server-local filesystem (where the chatbot
+lives). Counterpart to `push_file`/`pull_file` at the OCaml layer
+rather than the MCP-tool layer.
+
+```ocaml
+val Topup.read_back  : string -> bytes
+val Topup.write_back : string -> bytes -> unit
+```
+
+Routing follows the eval's destination, not the function's:
+
+- **In-process eval (`host:` omitted/`"local"`):** direct file I/O
+  on the daemon's own filesystem via `Topup_runtime.direct_hook`.
+- **Named local session (`session:`):** same — the subprocess
+  shares the chatbot's filesystem, so no muxer needed.
+- **Remote eval (`host:` set):** the remote daemon's `Server.run`
+  installed a muxed hook on connection accept. Each
+  `Topup.read_back` originates a JSON-RPC `_send_blob` request
+  back over the same SSH-forwarded socket; the local daemon's
+  `Remote_host`-side `Channel` reader dispatches it via
+  `Blob.dispatch` and writes the response. Bytes never touch
+  disk on the remote side.
+
+Implementation shape:
+
+- `lib/topup_runtime/` is a small leaf library (`topup.runtime` in
+  findlib). It holds `current_hook : io_hook ref`, defaulted to
+  `direct_hook`. `Session.create` evaluates the prelude
+  `module Topup = Topup_runtime;;` so the user-visible name is
+  `Topup` (the `.cmi` search path is added by
+  `Eval_backend.prepare_topup_runtime`; the bytecode is statically
+  linked, so the prelude does not `#require` — `Topfind.don't_load`
+  marks the package preloaded).
+- `lib/mcp/channel.ml` is the bidirectional muxer over a
+  newline-delimited JSON-RPC socket: writer mutex, reader thread
+  that demuxes responses (slot lookup) vs inbound requests (queued
+  to a single dispatcher thread that serialises in arrival order)
+  vs notifications (own thread, so cancel can interrupt an
+  in-flight eval rather than queueing behind it).
+- `lib/mcp/blob.ml` is a stateless helper with `_send_blob` /
+  `_recv_blob` semantics (mirror of the same names in
+  `Tools.dispatch_local`); the Remote_host channel's `on_request`
+  delegates to it.
+- `lib/mcp/server.ml`'s `run` installs the muxed hook on accept,
+  restores `direct_hook` on close. Session-touching tools serialise
+  on a per-connection `eval_mu`; blob tools intentionally bypass it
+  so a back-channel call can interleave while an eval is in flight.
+
+Cap and atomicity: same `TOPUP_XFER_MAX_BYTES` (16 MiB default) as
+push/pull; writes are atomic (`<path>.tmp` + `Unix.rename`).
+
+Cancel semantics (v1): best-effort. If `Topup.read_back` is blocked
+on `Condition.wait` for a back-channel response, `SIGINT` does not
+unblock it. The peer's reply (or its EOF) will eventually wake the
+slot. Tracked in the backlog as a follow-up.
+
+Deployment note: `topup.runtime` ships in the same opam package as
+`topup`; no extra installs. Remotes running `topup --socket` must
+be the same version as the local — older daemons will fail their
+session prelude when they don't find `topup.runtime` on the
+typechecker's load path.
 
 ## Named local sessions (per-call `session:`)
 

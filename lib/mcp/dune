@@ -2,4 +2,4 @@
  (name mcp)
  (public_name topup.mcp)
  (modes byte native)
- (libraries topup yojson base64 unix threads.posix))
+ (libraries topup topup_runtime yojson base64 unix threads.posix))

@@ -26,3 +26,11 @@ val max_printer_steps : int ref
     ["toploop"]). Idempotent; safe to call after
     [initialize_toplevel_env]. *)
 val init_findlib : unit -> unit
+
+(** Add the [topup.runtime] package's .cmi directory to the
+    typechecker's [Load_path] so [Session]'s prelude can resolve
+    [Topup_runtime]. Must be called after each
+    [initialize_toplevel_env] — the native backend's
+    [Compmisc.init_path ()] wipes the path. Silently no-op if the
+    package can't be found (test sandbox without findlib). *)
+val prepare_topup_runtime : unit -> unit

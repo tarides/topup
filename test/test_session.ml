@@ -478,4 +478,42 @@ let () =
        print_endline
          "FAIL compile_to_binary without log_path should Error";
        exit 1);
+  (* Topup.read_back / Topup.write_back round-trip via the default
+     direct_hook (no muxer; in-process eval shares the chatbot's
+     filesystem). *)
+  let back_dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-test-back-%d" (Unix.getpid ()))
+  in
+  (try Unix.mkdir back_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let back_in = Filename.concat back_dir "in.bin" in
+  let back_out = Filename.concat back_dir "out.bin" in
+  let payload = "back-channel test \x00\x01\x02\xff" in
+  let oc = open_out_bin back_in in
+  output_string oc payload;
+  close_out oc;
+  let r_back =
+    Session.eval s
+      (Printf.sprintf
+         "let b = Topup.read_back %S in Topup.write_back %S b; \
+          Bytes.length b;;"
+         back_in back_out)
+  in
+  (match r_back.error with
+   | None -> ()
+   | Some e ->
+       Printf.printf "FAIL Topup.read_back/write_back: %s\n" e.message;
+       exit 1);
+  check "Topup round-trip value_repr"
+    (string_of_int (String.length payload))
+    (Option.value ~default:"<none>" r_back.value_repr);
+  let got = read_file back_out in
+  if got <> payload then begin
+    Printf.printf
+      "FAIL Topup round-trip bytes: want %S got %S\n" payload got;
+    exit 1
+  end;
+  (try Sys.remove back_in with _ -> ());
+  (try Sys.remove back_out with _ -> ());
+  (try Unix.rmdir back_dir with _ -> ());
   print_endline "test_session: ok"
