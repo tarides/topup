@@ -24,4 +24,5 @@
   (ocaml (>= 5.1))
   (dune (>= 3.6))
   ocamlfind
-  yojson))
+  yojson
+  base64))

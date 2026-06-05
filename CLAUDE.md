@@ -165,8 +165,8 @@ phrase failed mid-replay and the session is in an intermediate state.
   `ToolSearch select:mcp__topup__eval,mcp__topup__env,…` before calling.
   The full set is `eval`, `eval_batch`, `env`, `lookup`, `reset`,
   `cancel`, `load`, `checkpoint`, `restore`, `compile_to_binary`,
-  `start_session`, `restart_session`, `update_host`,
-  `start_local_session`, `restart_local_session`,
+  `push_file`, `pull_file`, `start_session`, `restart_session`,
+  `update_host`, `start_local_session`, `restart_local_session`,
   `update_local_session`.
 
 ## Multi-host routing (per-call `host:`)
@@ -203,6 +203,42 @@ Concurrency is deliberately tight: the MCP server processes one
 `tools/call` at a time; per-host serialisation is implicit. Parallel
 fan-out to distinct hosts is a separate backlog item ("Multi-connection
 socket transport with serialized dispatch").
+
+## File transfer across the boundary (`push_file` / `pull_file`)
+
+`push_file { host, local_path, remote_path? }` and
+`pull_file { host, remote_path, local_path? }` carry bytes between
+the MCP-server-local filesystem and a registered remote, in-band
+over the existing forward JSON-RPC channel. `host:` is required —
+purely-local copies are rejected. `session:` is rejected (mutually
+exclusive with `host:`).
+
+Implementation shape:
+
+- Two public tools (`Tools.descriptors` entries) handle the
+  composition. They don't go through the standard `host:`-routing
+  dispatch — they extract `host:` themselves and originate two
+  separate operations: local disk I/O + a routed `tools/call` to
+  the internal `_recv_blob` / `_send_blob` primitive on the remote
+  daemon side.
+- `_recv_blob` and `_send_blob` are dispatchable by name in
+  `dispatch_local` but are **not** in `Tools.descriptors`, so they
+  do not appear in `tools/list`. The LLM-facing surface stays two
+  tools wide; the bytes-transport tools are internal helpers.
+- Payload is base64-encoded inside one JSON-RPC frame. Hard-capped
+  at `TOPUP_XFER_MAX_BYTES` bytes (default 16 MiB). The cap is
+  enforced before bytes are read on both sides.
+- Default destination directory: `$HOME/.topup/xfer/`, overridable
+  via `TOPUP_XFER_DIR=<path>`; `=off` requires explicit
+  `remote_path`/`local_path`. Created lazily (not wiped on session
+  create — these are explicit artefacts).
+- Writes are atomic (`<path>.tmp` + `Unix.rename`) on both sides.
+
+For chunked / streaming transfer (>16 MiB) or for in-toplevel
+primitives like `Topup.read_local` / `Topup.write_local` callable
+inside `eval`, see backlog: the latter requires a bidirectional
+JSON-RPC muxer on the SSH tunnel, which is a much larger lift than
+this forward-only path.
 
 Test hook for cram fixtures: setting
 `TOPUP_HOST_SOCKET_<HOST>=/path/to/sock` (with `<HOST>`

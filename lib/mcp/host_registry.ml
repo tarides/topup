@@ -258,8 +258,31 @@ let instructions_text t =
   Buffer.add_string buf
     "Persistent OCaml toplevel. Bindings survive across eval calls.\n\n";
   Buffer.add_string buf
-    "Pass an optional `host` to route eval/env/lookup/load/reset/cancel to \
-     a remote toplevel.\nCall start_session first to bring the host up.\n\n";
+    "Workspace pattern: name your intermediate values (`let hop1 = ...`) \
+     and read them back across turns; `env` lists what's bound, `lookup` \
+     inspects one binding. Build up a working set across evals rather \
+     than recomputing.\n\n";
+  Buffer.add_string buf
+    "Save points: `checkpoint { label }` snapshots the phrase log; \
+     `restore { label }` resets the toplevel and replays the snapshot. \
+     Use to branch exploration or recover from a bad eval — preferable \
+     to `reset` followed by rebuilding from scratch. Checkpoints persist \
+     across `topup` server restarts.\n\n";
+  Buffer.add_string buf
+    "Cross-boundary file moves: `push_file { host, local_path }` and \
+     `pull_file { host, remote_path }` ferry bytes between local and a \
+     registered remote in-band over JSON-RPC (no scp). Capped at \
+     `TOPUP_XFER_MAX_BYTES` (16 MiB default).\n\n";
+  Buffer.add_string buf
+    "Routing: pass `host: <name>` to route to a remote toplevel \
+     (call `start_session` first to bring the host up); pass \
+     `session: <name>` to route to a named local subprocess started \
+     via `start_local_session` (mutually exclusive with `host`). Omit \
+     both (or pass `local`) for the in-process session.\n\n";
+  Buffer.add_string buf
+    "Batch: `eval_batch { sources }` amortises round-trip cost over a \
+     list of phrases (stops on first error); useful for tight inner \
+     loops, especially when routed.\n\n";
   Buffer.add_string buf "This topup-mcp is version 0.1.0.\n\n";
   Buffer.add_string buf "Known hosts:\n";
   Buffer.add_string buf "- local [in-process]\n";

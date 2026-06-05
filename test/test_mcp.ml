@@ -84,11 +84,35 @@ let test_initialize_list_call () =
       Mcp.Rpc.write_message oc (request 2 "tools/list" ());
       let r = read_response_id ic in
       (match get_in r [ "result"; "tools" ] with
-       | `List tools when List.length tools = 16 -> ()
+       | `List tools when List.length tools = 18 -> ()
        | `List tools ->
            Printf.printf "FAIL tools/list: got %d tools\n" (List.length tools);
            exit 1
        | _ -> fail "tools/list shape");
+      let tool_names tools =
+        List.filter_map
+          (function
+            | `Assoc fs -> (
+                match List.assoc_opt "name" fs with
+                | Some (`String s) -> Some s
+                | _ -> None)
+            | _ -> None)
+          tools
+      in
+      (match get_in r [ "result"; "tools" ] with
+       | `List tools ->
+           let names = tool_names tools in
+           List.iter
+             (fun n ->
+               if not (List.mem n names) then
+                 fail ("tools/list missing " ^ n))
+             [ "push_file"; "pull_file" ];
+           List.iter
+             (fun n ->
+               if List.mem n names then
+                 fail ("tools/list unexpectedly exposes " ^ n))
+             [ "_recv_blob"; "_send_blob" ]
+       | _ -> ());
       let call_eval source =
         let params =
           `Assoc
@@ -563,6 +587,72 @@ let test_session_pool_persistence () =
   (try Sys.remove path with _ -> ());
   Unix.putenv "TOPUP_SESSIONS_FILE" "off"
 
+let test_push_file_requires_host () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "push_file");
+            ( "arguments",
+              `Assoc [ ("local_path", `String "/tmp/whatever") ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 50 "tools/call" ~params ());
+      let r = read_response_id ic in
+      (match get_in r [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "push_file no host: expected isError true");
+      let text = text_of r in
+      if not (contains text "'host' is required") then
+        fail "push_file no host: expected 'host is required' marker")
+
+let test_push_file_rejects_session () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "push_file");
+            ( "arguments",
+              `Assoc
+                [
+                  ("host", `String "anywhere");
+                  ("session", `String "anything");
+                  ("local_path", `String "/tmp/whatever");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 51 "tools/call" ~params ());
+      let r = read_response_id ic in
+      (match get_in r [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "push_file host+session: expected isError true");
+      let text = text_of r in
+      if not (contains text "mutually exclusive") then
+        fail "push_file host+session: expected 'mutually exclusive'")
+
+let test_pull_file_unregistered_host () =
+  with_server (fun ic oc ->
+      let params =
+        `Assoc
+          [
+            ("name", `String "pull_file");
+            ( "arguments",
+              `Assoc
+                [
+                  ("host", `String "ghost");
+                  ("remote_path", `String "/tmp/nope");
+                ] );
+          ]
+      in
+      Mcp.Rpc.write_message oc (request 52 "tools/call" ~params ());
+      let r = read_response_id ic in
+      (match get_in r [ "result"; "isError" ] with
+       | `Bool true -> ()
+       | _ -> fail "pull_file unknown host: expected isError true");
+      let text = text_of r in
+      if not (contains text "host not registered") then
+        fail "pull_file unknown host: expected 'host not registered'")
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -582,5 +672,8 @@ let () =
   test_unknown_session_errors ();
   test_session_local_aliases ();
   test_session_pool_persistence ();
+  test_push_file_requires_host ();
+  test_push_file_rejects_session ();
+  test_pull_file_unregistered_host ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

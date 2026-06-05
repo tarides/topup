@@ -95,6 +95,22 @@ let compile_to_binary_schema =
       ("session", session_prop);
     ]
 
+let push_file_schema =
+  object_schema ~required:[ "host"; "local_path" ]
+    [
+      ("host", host_prop);
+      ("local_path", string_prop);
+      ("remote_path", string_prop);
+    ]
+
+let pull_file_schema =
+  object_schema ~required:[ "host"; "remote_path" ]
+    [
+      ("host", host_prop);
+      ("remote_path", string_prop);
+      ("local_path", string_prop);
+    ]
+
 let start_session_schema =
   object_schema ~required:[ "host" ]
     [ ("host", host_prop); ("remote_socket", string_prop) ]
@@ -167,25 +183,35 @@ let descriptors : Yojson.Safe.t list =
       ~schema:eval_batch_schema;
     tool_def ~name:"env"
       ~description:
-        "List user-defined value bindings as (name, type). Stdlib and \
-         library bindings are hidden unless all:true is passed. Optional \
-         `host` selects a remote session."
+        "List user-defined value bindings as (name, type). Use to recall \
+         the workspace built up across previous eval calls — bindings \
+         persist, you don't have to. Stdlib and library bindings are \
+         hidden unless `all: true`. Optional `host`/`session` selects a \
+         routed session."
       ~schema:env_schema;
     tool_def ~name:"lookup"
       ~description:
-        "Inspect a single binding by name. Optional `host` selects a \
-         remote session."
+        "Inspect a single binding by name: returns type, source location, \
+         and a small value preview. Pair with `env` to navigate a session \
+         you didn't build yourself or have lost track of. Optional \
+         `host`/`session` selects a routed session."
       ~schema:lookup_schema;
     tool_def ~name:"reset"
       ~description:
-        "Discard the toplevel environment and start fresh. Optional `host` \
-         selects a remote session."
+        "Discard the toplevel environment and start fresh. For branching \
+         exploration or recovery from a corrupted state, prefer \
+         `restore { label }` instead — it gives you back a known-good \
+         workspace rather than an empty one. Reset also drops `#load`-ed \
+         libraries; re-issue `load` after. Optional `host`/`session` \
+         selects a routed session."
       ~schema:host_or_session_schema;
     tool_def ~name:"cancel"
       ~description:
-        "Interrupt the currently-running evaluation. Optional `host` \
-         selects a remote session; bare `cancel` cancels the local session \
-         only (does NOT broadcast across hosts)."
+        "Interrupt the currently-running evaluation (sends SIGINT to the \
+         eval thread, surfaces as `evaluation timed out` in the eval \
+         result). Optional `host`/`session` selects a routed session; \
+         bare `cancel` cancels the local in-process eval only (does NOT \
+         broadcast across hosts)."
       ~schema:host_or_session_schema;
     tool_def ~name:"load"
       ~description:
@@ -260,6 +286,39 @@ let descriptors : Yojson.Safe.t list =
          `out` path. Optional `session` routes to a named local \
          subprocess."
       ~schema:compile_to_binary_schema;
+    tool_def ~name:"push_file"
+      ~description:
+        "Copy a file from the local MCP-server filesystem to the \
+         remote daemon registered as `host`. `host` is required; \
+         purely-local copies are rejected. `local_path` is read on \
+         the side running the MCP server. `remote_path` defaults to \
+         $TOPUP_XFER_DIR/<basename of local_path> on the remote \
+         (default $HOME/.topup/xfer/, settable via TOPUP_XFER_DIR; \
+         =off requires `remote_path` to be passed explicitly). \
+         Returns { remote_path, bytes }. Payload travels base64 in \
+         the MCP request, so files are size-capped at \
+         TOPUP_XFER_MAX_BYTES bytes (default 16 MiB) — oversized \
+         files are rejected before any bytes are read. The remote \
+         write is atomic (.tmp + rename) so a crash mid-transfer \
+         cannot leave a partial file at `remote_path`. Pair with \
+         subsequent eval calls that `open_in remote_path` to feed \
+         a remote OCaml session local data without rsync."
+      ~schema:push_file_schema;
+    tool_def ~name:"pull_file"
+      ~description:
+        "Copy a file from the remote daemon registered as `host` \
+         back to the local MCP-server filesystem. `host` is \
+         required. `local_path` defaults to $TOPUP_XFER_DIR/<basename \
+         of remote_path> on the local side (default \
+         $HOME/.topup/xfer/, settable via TOPUP_XFER_DIR; =off \
+         requires `local_path` to be passed explicitly). Returns \
+         { local_path, bytes }. Size cap matches `push_file` \
+         (TOPUP_XFER_MAX_BYTES, default 16 MiB); the remote \
+         daemon refuses to send oversized files before any bytes \
+         leave the disk. Local write is atomic. Pair with prior \
+         eval calls that wrote artefacts on the remote (open_out / \
+         flush) to bring final results back without rsync."
+      ~schema:pull_file_schema;
     tool_def ~name:"start_session"
       ~description:
         "Bring up a remote topup session on `host`. Opens an SSH tunnel \
@@ -315,6 +374,97 @@ let descriptors : Yojson.Safe.t list =
          take effect on the live session."
       ~schema:update_local_session_schema;
   ]
+
+let xfer_default_max_bytes = 16 * 1024 * 1024
+
+let xfer_max_bytes () =
+  match Sys.getenv_opt "TOPUP_XFER_MAX_BYTES" with
+  | None | Some "" -> xfer_default_max_bytes
+  | Some s -> (
+      match int_of_string_opt (String.trim s) with
+      | Some n when n > 0 -> n
+      | _ -> xfer_default_max_bytes)
+
+(* Resolve TOPUP_XFER_DIR:
+   - Some path     : directory to use as the default destination.
+   - None          : disabled — caller must pass an explicit path.
+   The =off literal disables; absent variable falls back to
+   $HOME/.topup/xfer/. *)
+let xfer_dir () : string option =
+  match Sys.getenv_opt "TOPUP_XFER_DIR" with
+  | Some "off" -> None
+  | Some s when s <> "" -> Some s
+  | _ -> (
+      match Sys.getenv_opt "HOME" with
+      | Some home when home <> "" ->
+          Some (Filename.concat home ".topup/xfer")
+      | _ -> Some "/tmp/topup-xfer")
+
+let expand_tilde (path : string) : string =
+  if path = "~" then
+    match Sys.getenv_opt "HOME" with Some h -> h | None -> path
+  else if String.length path >= 2
+       && path.[0] = '~'
+       && path.[1] = '/'
+  then
+    match Sys.getenv_opt "HOME" with
+    | Some h -> Filename.concat h (String.sub path 2 (String.length path - 2))
+    | None -> path
+  else path
+
+let rec mkdir_p path =
+  if path = "" || path = "/" || path = "." then ()
+  else if Sys.file_exists path then ()
+  else begin
+    mkdir_p (Filename.dirname path);
+    try Unix.mkdir path 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
+
+let read_file_bytes ~max_bytes path : (bytes, string) result =
+  match Unix.stat path with
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+      Error ("no such file: " ^ path)
+  | exception Unix.Unix_error (err, _, _) ->
+      Error (Unix.error_message err ^ ": " ^ path)
+  | st ->
+      if st.Unix.st_kind <> Unix.S_REG then
+        Error ("not a regular file: " ^ path)
+      else if st.Unix.st_size > max_bytes then
+        Error
+          (Printf.sprintf
+             "file too large: %s is %d bytes; cap is %d (TOPUP_XFER_MAX_BYTES)"
+             path st.Unix.st_size max_bytes)
+      else begin
+        let ic = open_in_bin path in
+        Fun.protect
+          ~finally:(fun () -> close_in_noerr ic)
+          (fun () ->
+            let n = st.Unix.st_size in
+            let b = Bytes.create n in
+            really_input ic b 0 n;
+            Ok b)
+      end
+
+let write_file_atomic ~path bytes : (int, string) result =
+  let dir = Filename.dirname path in
+  (try mkdir_p dir
+   with exn ->
+     ignore exn);
+  let tmp = path ^ ".tmp" in
+  match
+    let oc = open_out_bin tmp in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr oc)
+      (fun () -> output_bytes oc bytes);
+    Unix.rename tmp path
+  with
+  | () -> Ok (Bytes.length bytes)
+  | exception Unix.Unix_error (err, _, _) ->
+      (try Sys.remove tmp with _ -> ());
+      Error (Unix.error_message err ^ ": " ^ path)
+  | exception Sys_error msg ->
+      (try Sys.remove tmp with _ -> ());
+      Error msg
 
 let json_of_phase = function
   | Error.Typecheck -> `String "typecheck"
@@ -459,6 +609,55 @@ let unwrap_routed_response ~label response =
               text_result ~is_error:true (label ^ ": " ^ msg)
           | _ -> text_result ~is_error:true (label ^ ": malformed response")))
   | _ -> text_result ~is_error:true (label ^ ": malformed response")
+
+(* Parse the inner `{content:[{text:...}], isError:?}` envelope produced
+   by `text_result`/`json_result` on the remote side. JSON-bodied tool
+   results round-trip through a stringified text field; success means
+   parseable JSON, [isError=true] surfaces the text verbatim. *)
+let parse_text_content_json (resp : Yojson.Safe.t) : (Yojson.Safe.t, string) result =
+  let is_error =
+    match resp with
+    | `Assoc fs -> (
+        match List.assoc_opt "isError" fs with
+        | Some (`Bool b) -> b
+        | _ -> false)
+    | _ -> false
+  in
+  let text =
+    match resp with
+    | `Assoc fs -> (
+        match List.assoc_opt "content" fs with
+        | Some (`List (`Assoc cf :: _)) -> (
+            match List.assoc_opt "text" cf with
+            | Some (`String s) -> Some s
+            | _ -> None)
+        | _ -> None)
+    | _ -> None
+  in
+  match text with
+  | None -> Error "malformed response"
+  | Some s ->
+      if is_error then Error s
+      else
+        try Ok (Yojson.Safe.from_string s)
+        with Yojson.Json_error _ -> Error s
+
+let int_field json key =
+  match json with
+  | `Assoc fs -> (
+      match List.assoc_opt key fs with
+      | Some (`Int n) -> Some n
+      | Some (`Float f) -> Some (int_of_float f)
+      | _ -> None)
+  | _ -> None
+
+let string_field json key =
+  match json with
+  | `Assoc fs -> (
+      match List.assoc_opt key fs with
+      | Some (`String s) -> Some s
+      | _ -> None)
+  | _ -> None
 
 let route_remote registry host name args =
   match Host_registry.live registry host with
@@ -628,6 +827,50 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
           with
           | Ok r -> json_result (json_of_compile_result r)
           | Error msg -> text_result ~is_error:true msg)
+  | "_recv_blob" -> (
+      match (get_string args "path", get_string args "data") with
+      | None, _ -> text_result ~is_error:true "missing 'path' argument"
+      | _, None -> text_result ~is_error:true "missing 'data' argument"
+      | Some path, Some data ->
+          let path = expand_tilde path in
+          (match Base64.decode data with
+           | Error (`Msg msg) ->
+               text_result ~is_error:true ("base64 decode: " ^ msg)
+           | Ok decoded ->
+               let bytes_in = String.length decoded in
+               let cap = xfer_max_bytes () in
+               if bytes_in > cap then
+                 text_result ~is_error:true
+                   (Printf.sprintf
+                      "payload too large: %d bytes; cap is %d \
+                       (TOPUP_XFER_MAX_BYTES)"
+                      bytes_in cap)
+               else
+                 match
+                   write_file_atomic ~path (Bytes.of_string decoded)
+                 with
+                 | Ok n ->
+                     json_result
+                       (`Assoc
+                          [ ("path", `String path); ("bytes", `Int n) ])
+                 | Error msg -> text_result ~is_error:true msg))
+  | "_send_blob" -> (
+      match get_string args "path" with
+      | None -> text_result ~is_error:true "missing 'path' argument"
+      | Some path ->
+          let path = expand_tilde path in
+          let max_bytes = xfer_max_bytes () in
+          (match read_file_bytes ~max_bytes path with
+           | Error msg -> text_result ~is_error:true msg
+           | Ok b ->
+               let encoded = Base64.encode_string (Bytes.to_string b) in
+               json_result
+                 (`Assoc
+                    [
+                      ("path", `String path);
+                      ("data", `String encoded);
+                      ("bytes", `Int (Bytes.length b));
+                    ])))
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
 let dispatch_lifecycle registry name (args : Yojson.Safe.t) : Yojson.Safe.t =
@@ -783,6 +1026,143 @@ let dispatch_pool_lifecycle pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
           | exception Failure msg -> text_result ~is_error:true msg))
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
+let send_internal_tool rh ~name ~(args : Yojson.Safe.t) : Yojson.Safe.t =
+  let req : Yojson.Safe.t =
+    `Assoc
+      [
+        ("jsonrpc", `String "2.0");
+        ("id", `Int 0);
+        ("method", `String "tools/call");
+        ( "params",
+          `Assoc
+            [ ("name", `String name); ("arguments", args) ] );
+      ]
+  in
+  Remote_host.send rh req
+
+let ( let* ) = Result.bind
+
+let default_xfer_path ~basename : (string, string) result =
+  match xfer_dir () with
+  | Some dir -> Ok (Filename.concat dir basename)
+  | None ->
+      Error
+        "no default path: TOPUP_XFER_DIR=off, the corresponding path \
+         argument must be supplied"
+
+let routed_send_internal rh ~label ~name ~(args : Yojson.Safe.t) :
+    (Yojson.Safe.t, string) result =
+  match send_internal_tool rh ~name ~args with
+  | exception Failure msg -> Error (label ^ ": " ^ msg)
+  | exception exn -> Error (label ^ ": " ^ Printexc.to_string exn)
+  | response -> (
+      let inner = unwrap_routed_response ~label response in
+      match parse_text_content_json inner with
+      | Ok j -> Ok j
+      | Error msg -> Error (label ^ ": " ^ msg))
+
+let do_push_file rh ~label ~args =
+  let* local_path =
+    Result.map_error
+      (fun () -> "missing 'local_path' argument")
+      (Option.to_result ~none:() (get_string args "local_path"))
+  in
+  let local_path = expand_tilde local_path in
+  let* remote_path =
+    match get_string args "remote_path" with
+    | Some p -> Ok (expand_tilde p)
+    | None -> default_xfer_path ~basename:(Filename.basename local_path)
+  in
+  let max_bytes = xfer_max_bytes () in
+  let* b = read_file_bytes ~max_bytes local_path in
+  let data = Base64.encode_string (Bytes.to_string b) in
+  let blob_args : Yojson.Safe.t =
+    `Assoc [ ("path", `String remote_path); ("data", `String data) ]
+  in
+  let* j = routed_send_internal rh ~label ~name:"_recv_blob" ~args:blob_args in
+  let bytes = Option.value (int_field j "bytes") ~default:(Bytes.length b) in
+  let final_path = Option.value (string_field j "path") ~default:remote_path in
+  Ok
+    (`Assoc [ ("remote_path", `String final_path); ("bytes", `Int bytes) ]
+      : Yojson.Safe.t)
+
+let do_pull_file rh ~label ~args =
+  let* remote_path =
+    Result.map_error
+      (fun () -> "missing 'remote_path' argument")
+      (Option.to_result ~none:() (get_string args "remote_path"))
+  in
+  let remote_path = expand_tilde remote_path in
+  let* local_path =
+    match get_string args "local_path" with
+    | Some p -> Ok (expand_tilde p)
+    | None -> default_xfer_path ~basename:(Filename.basename remote_path)
+  in
+  let blob_args : Yojson.Safe.t = `Assoc [ ("path", `String remote_path) ] in
+  let* j = routed_send_internal rh ~label ~name:"_send_blob" ~args:blob_args in
+  let* data =
+    Option.to_result
+      ~none:(label ^ ": remote response missing 'data'")
+      (string_field j "data")
+  in
+  let* decoded =
+    match Base64.decode data with
+    | Ok s -> Ok s
+    | Error (`Msg msg) -> Error (label ^ ": base64 decode: " ^ msg)
+  in
+  let cap = xfer_max_bytes () in
+  let n = String.length decoded in
+  let* () =
+    if n > cap then
+      Error
+        (Printf.sprintf
+           "payload too large: %d bytes; cap is %d (TOPUP_XFER_MAX_BYTES)" n
+           cap)
+    else Ok ()
+  in
+  let* m = write_file_atomic ~path:local_path (Bytes.of_string decoded) in
+  Ok
+    (`Assoc [ ("local_path", `String local_path); ("bytes", `Int m) ]
+      : Yojson.Safe.t)
+
+let dispatch_xfer registry name (args : Yojson.Safe.t) : Yojson.Safe.t =
+  let session_set =
+    match extract_session args with Some _ -> true | None -> false
+  in
+  if session_set then
+    text_result ~is_error:true
+      "host and session are mutually exclusive; push_file/pull_file require \
+       host (the boundary is local↔remote)"
+  else
+    let host =
+      match get_string args "host" with
+      | None | Some "" | Some "local" -> None
+      | Some h -> Some h
+    in
+    match host with
+    | None ->
+        text_result ~is_error:true
+          (name
+         ^ ": 'host' is required (push_file/pull_file cross the local↔remote \
+            boundary; same-machine copies don't go through topup)")
+    | Some h -> (
+        match Host_registry.live registry h with
+        | None ->
+            text_result ~is_error:true
+              ("host not registered: " ^ h ^ " (call start_session { host: "
+             ^ h ^ " } first)")
+        | Some rh ->
+            let label = "remote " ^ h in
+            let result =
+              match name with
+              | "push_file" -> do_push_file rh ~label ~args
+              | "pull_file" -> do_pull_file rh ~label ~args
+              | _ -> Error ("unknown xfer tool: " ^ name)
+            in
+            (match result with
+             | Ok j -> json_result j
+             | Error msg -> text_result ~is_error:true msg))
+
 let dispatch session registry pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
   try
     match name with
@@ -791,6 +1171,7 @@ let dispatch session registry pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
     | "start_local_session" | "restart_local_session" | "update_local_session"
       ->
         dispatch_pool_lifecycle pool name args
+    | "push_file" | "pull_file" -> dispatch_xfer registry name args
     | _ -> (
         match (extract_host args, extract_session args) with
         | Some _, Some _ ->

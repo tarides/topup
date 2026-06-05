@@ -76,6 +76,8 @@ any project. The skill calls `mcp__topup__*` directly, so the
 | `lookup(name)` | Inspect a single binding. |
 | `reset()` | Discard the toplevel environment. |
 | `cancel()` | Interrupt the running evaluation. |
+| `push_file({host, local_path, remote_path?})` | Copy a file from local to a registered remote, in-band over JSON-RPC. |
+| `pull_file({host, remote_path, local_path?})` | Reverse direction. Defaults to `$TOPUP_XFER_DIR/<basename>`; capped at `TOPUP_XFER_MAX_BYTES` (16 MiB). |
 
 ## Example
 
@@ -92,6 +94,52 @@ env    { filter: "xs" }
 eval   { source: "let rec spin n = spin n;;", timeout: 0.3 }
        → error: { phase: "runtime", message: "evaluation timed out" }
 ```
+
+## Workspace pattern
+
+A topup session is a workspace, not a calculator. Bindings persist
+across eval calls, so the productive shape is multi-eval — name
+each intermediate, read it back across turns, and use `env` to
+recall what you have:
+
+```ocaml
+(* eval 1 — bring in a library and load raw input *)
+#require "csv";;
+let raw = Csv.load "boundary.csv";;
+(* raw : string list list *)
+
+(* eval 2 — derive in-memory; named, persists for later turns *)
+let parsed =
+  List.map
+    (function [day; n] -> day, int_of_string n | _ -> assert false)
+    (List.tl raw)
+;;
+(* parsed : (string * int) list *)
+
+(* checkpoint — save-point before something experimental *)
+(* mcp: checkpoint { label: "parsed" } *)
+
+(* eval 3 — derive again; restore { label: "parsed" } rewinds here *)
+let by_day = List.fold_left (fun acc (d, n) -> ...) [] parsed;;
+
+(* env — recall the workspace state across turns *)
+(* mcp: env {} → raw, parsed, by_day with their types *)
+```
+
+Discoverability nudges that make the pattern stick:
+
+- Reach for an existing opam package (`#require "csv";;`,
+  `#require "re";;`) before hand-rolling. The session inherits
+  findlib, so anything `opam install`-able is available.
+- Use `checkpoint { label }` as a save-point before risky steps;
+  `restore { label }` rewinds the whole workspace, not just one
+  binding. Snapshots live under `~/.topup/checkpoints/` and
+  survive server restarts.
+- On a remote (`host: "myhost"`), `push_file` / `pull_file` carry
+  inputs and outputs across the boundary in-band over the same
+  JSON-RPC channel — no `scp`.
+- `eval_batch` runs a list of phrases in one round-trip — useful
+  for the inner loop of a build-up, especially when routed.
 
 ## Troubleshooting `#require`
 

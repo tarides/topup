@@ -70,6 +70,38 @@ block in the `initialize` response — it's rebuilt on every
 handshake from the in-process registry and lists each known host
 with its connection state and any metadata.
 
+## Moving files across the boundary
+
+`push_file` and `pull_file` ferry bytes between the local
+MCP-server filesystem and a registered remote, in-band over the
+existing JSON-RPC channel — no `scp`/`rsync`, no second auth.
+
+```
+mcp__topup__push_file { host: "myhost", local_path: "boundary.csv" }
+  → { remote_path: "~/.topup/xfer/boundary.csv", bytes: 4321 }
+
+mcp__topup__eval { host: "myhost",
+                   source: "let ic = open_in \"~/.topup/xfer/boundary.csv\";;" }
+
+mcp__topup__pull_file { host: "myhost",
+                        remote_path: "~/.topup/xfer/result.csv" }
+  → { local_path: "~/.topup/xfer/result.csv", bytes: 89211 }
+```
+
+Both tools require `host:` — same-machine copies don't go through
+topup. Defaults: when `remote_path` (push) or `local_path` (pull)
+is omitted, the destination is `$TOPUP_XFER_DIR/<basename>` on
+that side (`$HOME/.topup/xfer/` by default; settable via
+`TOPUP_XFER_DIR`; `=off` requires the path to be passed
+explicitly).
+
+Payload is base64-encoded inside one JSON-RPC frame, so files are
+size-capped at `TOPUP_XFER_MAX_BYTES` (default 16 MiB). Larger
+files still need the `scp`/`rsync` route — the cap is enforced
+before any bytes are read, so an oversized `push_file` fails
+fast. Local and remote writes are atomic (`.tmp` + `rename`); a
+crash mid-transfer cannot leave a partial file at the destination.
+
 ## `/caml --host=<name>` (slash command)
 
 If you use the `/caml` skill, append `--host=<name>` to route a
@@ -135,11 +167,12 @@ These are deliberate v1 cuts; see `backlog.md` for the rationale:
   `restart_session { host }` to bring it back up.
 - **No broadcast cancel.** `cancel { host: X }` cancels host X
   only. Bare `cancel` cancels the local session.
-- **Phrase log and spill files are remote-side.** A routed eval
-  whose `value_repr` / `stdout` / `stderr` overflows writes its
-  spill file under `$HOME/.topup/spill/` *on the remote*. The
-  local agent can't read it directly; copy it back over scp if
-  needed.
+- **Phrase log, spill, checkpoints are remote-side.** A routed
+  eval whose `value_repr` / `stdout` / `stderr` overflows writes
+  its spill file under `$HOME/.topup/spill/` *on the remote*. The
+  same goes for the phrase log and `checkpoint`/`restore`
+  snapshots. The local agent can't read these paths directly;
+  pull them across with `pull_file` (above) or use `scp`.
 
 ## Troubleshooting
 
