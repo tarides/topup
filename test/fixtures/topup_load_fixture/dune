@@ -10,3 +10,12 @@
   (progn
    (run ocamlc -c %{deps})
    (run ocamlc -a -o topup_load_fixture.cma topup_load_fixture.cmo))))
+
+; Native sibling for topup-opt. The .cmi from the bytecode rule above
+; serves both backends.
+
+(rule
+ (targets topup_load_fixture.cmxs)
+ (deps topup_load_fixture.ml)
+ (action
+  (run ocamlopt -shared -o topup_load_fixture.cmxs %{deps})))

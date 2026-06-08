@@ -215,19 +215,18 @@ let descriptors : Yojson.Safe.t list =
       ~schema:host_or_session_schema;
     tool_def ~name:"load"
       ~description:
-        "Dynlink a bytecode archive (.cma) or object file (.cmo) into the \
-         live toplevel session. The driver is bytecode-only, so .cmxs is \
-         not accepted; use a .cma instead. Pass an absolute path; the \
-         directory of the path is added to the toplevel's load path so the \
-         .cmi sitting next to the .cma is discoverable. Loaded modules \
-         become available to subsequent eval calls under their compilation \
-         unit names. Returns the same JSON shape as eval. Note: Toploop's \
-         #load currently swallows file-not-found errors silently — confirm \
-         the load worked by referencing a binding via eval. Loaded \
-         archives are NOT replayed on reset and are NOT recorded in the \
-         persistent phrase log; re-issue load after reset. Optional `host` \
-         routes the load to a remote toplevel; the path must exist on the \
-         remote filesystem."
+        "Dynlink a compiled archive into the live toplevel session. \
+         Accepted extensions follow the driver: .cma / .cmo under topup, \
+         .cmxs under topup-opt. Pass an absolute path; the directory of \
+         the path is added to the toplevel's load path so the .cmi sitting \
+         next to the archive is discoverable. Loaded modules become \
+         available to subsequent eval calls under their compilation unit \
+         names. Returns the same JSON shape as eval. Loaded archives are \
+         NOT replayed on reset and are NOT recorded in the persistent \
+         phrase log; re-issue load after reset. Optional `host` routes \
+         the load to a remote toplevel; the path must exist on the remote \
+         filesystem (and the remote driver determines which extensions \
+         are accepted)."
       ~schema:load_schema;
     tool_def ~name:"checkpoint"
       ~description:
@@ -792,12 +791,31 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
       match get_string args "path" with
       | None -> text_result ~is_error:true "missing 'path' argument"
       | Some path ->
-          let dir = Filename.dirname path in
-          let phrase =
-            Printf.sprintf "#directory %S;;\n#load %S;;" dir path
+          let accepted, suggested, backend_name =
+            match Sys.backend_type with
+            | Sys.Native -> ([ ".cmxs" ], ".cmxs", "Native")
+            | Sys.Bytecode -> ([ ".cma"; ".cmo" ], ".cma", "Bytecode")
+            | Sys.Other s -> ([], s, "Other " ^ s)
           in
-          let r = Session.eval session phrase in
-          json_result (json_of_eval_result r))
+          let ext = String.lowercase_ascii (Filename.extension path) in
+          if not (List.mem ext accepted) then
+            text_result ~is_error:true
+              (Printf.sprintf
+                 "load: %s has extension %s; this driver accepts %s (got \
+                  Sys.backend_type = %s)"
+                 path
+                 (if ext = "" then "(none)" else ext)
+                 suggested backend_name)
+          else if not (Sys.file_exists path) then
+            text_result ~is_error:true
+              (Printf.sprintf "load: file not found: %s" path)
+          else
+            let dir = Filename.dirname path in
+            let phrase =
+              Printf.sprintf "#directory %S;;\n#load %S;;" dir path
+            in
+            let r = Session.eval session phrase in
+            json_result (json_of_eval_result r))
   | "checkpoint" -> (
       match get_string args "label" with
       | None -> text_result ~is_error:true "missing 'label' argument"

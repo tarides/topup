@@ -53,6 +53,15 @@ a subsequent connection.
   $ ./socket_client.bc.exe topup.sock eval "Topup_load_fixture.greet \"socket\";;"
   "hi from fixture, socket"
 
+Passing a `.cmxs` under the bytecode driver fails with a clear
+backend-mismatch message, and a non-existent path surfaces a clear
+not-found error rather than Topdirs' silent swallow.
+
+  $ ./socket_client.bc.exe topup.sock request '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"load","arguments":{"path":"'"$PWD"'/fixtures/topup_load_fixture/topup_load_fixture.cmxs"}}}' | grep -o 'this driver accepts \.cma'
+  this driver accepts .cma
+  $ ./socket_client.bc.exe topup.sock request '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"load","arguments":{"path":"'"$PWD"'/no-such-archive.cma"}}}' | grep -o 'load: file not found'
+  load: file not found
+
 `reset` discards user state; `env` afterwards is empty.
 
   $ ./socket_client.bc.exe topup.sock reset

@@ -55,6 +55,26 @@ out` runtime error within the cap (SIGINT delivery into a Dynlinked
   $ ./socket_client.bc.exe topup.sock request '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eval","arguments":{"source":"while true do () done;;","timeout":0.5}}}' | grep -o 'evaluation timed out'
   evaluation timed out
 
+`load` accepts a native `.cmxs` under topup-opt; the loaded module is
+reachable from a subsequent eval.
+
+  $ ./socket_client.bc.exe topup.sock load "$PWD/fixtures/topup_load_fixture/topup_load_fixture.cmxs"
+  ok
+  $ ./socket_client.bc.exe topup.sock eval "Topup_load_fixture.answer;;"
+  42
+
+Passing a `.cma` under the native driver fails with a clear
+backend-mismatch message, not an opaque Dynlink diagnostic.
+
+  $ ./socket_client.bc.exe topup.sock request '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"load","arguments":{"path":"'"$PWD"'/fixtures/topup_load_fixture/topup_load_fixture.cma"}}}' | grep -o 'this driver accepts \.cmxs'
+  this driver accepts .cmxs
+
+A non-existent path with the right extension surfaces a clear
+file-not-found error rather than Topdirs' silent swallow.
+
+  $ ./socket_client.bc.exe topup.sock request '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"load","arguments":{"path":"'"$PWD"'/no-such-archive.cmxs"}}}' | grep -o 'load: file not found'
+  load: file not found
+
 `reset` discards user state; `env` afterwards is empty.
 
   $ ./socket_client.bc.exe topup.sock reset

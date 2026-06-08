@@ -26,6 +26,19 @@ let fail msg =
   print_endline ("FAIL " ^ msg);
   exit 1
 
+let contains haystack needle =
+  let nh = String.length haystack in
+  let nn = String.length needle in
+  if nn = 0 then true
+  else
+    let last = nh - nn in
+    let rec loop i =
+      if i > last then false
+      else if String.sub haystack i nn = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+
 let with_server f =
   let cs_ic, cs_oc = pipe_pair () in
   let sc_ic, sc_oc = pipe_pair () in
@@ -210,25 +223,28 @@ let test_initialize_list_call () =
       (match get_in payload_use [ "value_repr" ] with
        | `String "42" -> ()
        | _ -> fail "loaded fixture's answer != 42");
+      let result_is_error r =
+        match get_in r [ "result"; "isError" ] with
+        | `Bool b -> b
+        | _ -> false
+      in
       let r_bad = call_load "/definitely/not/a/real/path.cma" in
-      let payload_bad = Yojson.Safe.from_string (text_of r_bad) in
-      (match payload_bad with
-       | `Assoc _ -> ()
-       | _ -> fail "load bad path: malformed payload");
+      if not (result_is_error r_bad) then
+        fail "load bad path: expected isError=true";
+      let msg_bad = text_of r_bad in
+      if not (contains msg_bad "file not found") then
+        fail ("load bad path: missing 'file not found' in: " ^ msg_bad);
+      let r_mismatch =
+        call_load (Filename.concat (Sys.getcwd ()) "no-such.cmxs")
+      in
+      if not (result_is_error r_mismatch) then
+        fail "load .cmxs under bytecode: expected isError=true";
+      let msg_mismatch = text_of r_mismatch in
+      if not (contains msg_mismatch "this driver accepts .cma") then
+        fail
+          ("load .cmxs under bytecode: missing mismatch hint in: "
+          ^ msg_mismatch);
       ())
-
-let contains haystack needle =
-  let nh = String.length haystack in
-  let nn = String.length needle in
-  if nn = 0 then true
-  else
-    let last = nh - nn in
-    let rec loop i =
-      if i > last then false
-      else if String.sub haystack i nn = needle then true
-      else loop (i + 1)
-    in
-    loop 0
 
 let test_initialize_has_instructions () =
   with_server (fun ic oc ->

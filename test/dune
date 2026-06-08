@@ -25,4 +25,5 @@
   ./socket_client.bc.exe
   ./deaf_socket_server.bc.exe
   fixtures/topup_load_fixture/topup_load_fixture.cma
-  fixtures/topup_load_fixture/topup_load_fixture.cmi))
+  fixtures/topup_load_fixture/topup_load_fixture.cmi
+  fixtures/topup_load_fixture/topup_load_fixture.cmxs))
