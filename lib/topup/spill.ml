@@ -17,18 +17,6 @@ let rec rm_rf path =
   | _ ->
       (try Unix.unlink path with Unix.Unix_error _ -> ())
 
-let mkdir_p path =
-  let rec loop p =
-    if p = "" || p = "/" || p = "." then ()
-    else begin
-      loop (Filename.dirname p);
-      match Unix.mkdir p 0o700 with
-      | () -> ()
-      | exception Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
-
 (* Three-way result for each source: [`Use s] means "spill to this dir",
    [`Off] means "explicitly disabled, do not fall through", [`Unset]
    means "this source said nothing, try the next." *)
@@ -61,7 +49,7 @@ let create ?dir () =
     | Some path -> (
         rm_rf path;
         try
-          mkdir_p path;
+          Topup_util.mkdir_p path;
           Some path
         with _ -> None)
   in

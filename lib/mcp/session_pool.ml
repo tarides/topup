@@ -80,17 +80,6 @@ let create () =
    | _ -> ());
   { entries; persist_path; mutex = Mutex.create () }
 
-let ensure_parent_dir path =
-  let dir = Filename.dirname path in
-  let rec mkdir_p d =
-    if d = "/" || d = "." then ()
-    else if Sys.file_exists d then ()
-    else (
-      mkdir_p (Filename.dirname d);
-      try Unix.mkdir d 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-  in
-  mkdir_p dir
-
 let snapshot_entry e =
   match e.session with
   | None -> e
@@ -112,18 +101,11 @@ let persist_locked t =
       let j : Yojson.Safe.t =
         `Assoc [ ("sessions", `List (List.map json_of_entry items)) ]
       in
-      (try
-         ensure_parent_dir path;
-         let tmp = path ^ ".tmp" in
-         (* 0o600: session metadata is owner-only. *)
-         let oc =
-           open_out_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 tmp
-         in
-         output_string oc (Yojson.Safe.pretty_to_string j);
-         output_char oc '\n';
-         close_out oc;
-         Unix.rename tmp path
-       with _ -> ())
+      (* 0o600: session metadata is owner-only. Errors are ignored — a
+         failed persist must not break the live session. *)
+      ignore
+        (Topup_util.write_atomic path
+           (Bytes.of_string (Yojson.Safe.pretty_to_string j ^ "\n")))
 
 let lookup t name =
   Mutex.lock t.mutex;

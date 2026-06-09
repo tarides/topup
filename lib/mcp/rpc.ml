@@ -8,12 +8,8 @@ let default_max_message_bytes = 64 * 1024 * 1024
    64 MiB default. Guards the reader against a peer that streams an
    unbounded line to exhaust memory. *)
 let max_message_bytes () =
-  match Sys.getenv_opt "TOPUP_MAX_MESSAGE_BYTES" with
-  | None | Some "" -> default_max_message_bytes
-  | Some s -> (
-      match int_of_string_opt (String.trim s) with
-      | Some n when n > 0 -> n
-      | _ -> default_max_message_bytes)
+  Topup_util.env_positive_int "TOPUP_MAX_MESSAGE_BYTES"
+    ~default:default_max_message_bytes
 
 exception Message_too_large of int
 
@@ -45,3 +41,25 @@ let write_message oc msg =
   output_string oc (Yojson.Safe.to_string msg);
   output_char oc '\n';
   flush oc
+
+(* JSON-RPC 2.0 envelope constructors — the single home for the
+   [("jsonrpc", `String "2.0")] boilerplate that was previously inlined
+   across the server, channel, and routing code. *)
+
+let request ?params ~id meth =
+  let fields =
+    [ ("jsonrpc", `String "2.0"); ("id", id); ("method", `String meth) ]
+  in
+  `Assoc
+    (match params with Some p -> fields @ [ ("params", p) ] | None -> fields)
+
+let response ~id result =
+  `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
+
+let error ?(code = -32603) ?(message = "Internal error") id =
+  `Assoc
+    [
+      ("jsonrpc", `String "2.0");
+      ("id", id);
+      ("error", `Assoc [ ("code", `Int code); ("message", `String message) ]);
+    ]

@@ -377,12 +377,8 @@ let descriptors : Yojson.Safe.t list =
 let xfer_default_max_bytes = 16 * 1024 * 1024
 
 let xfer_max_bytes () =
-  match Sys.getenv_opt "TOPUP_XFER_MAX_BYTES" with
-  | None | Some "" -> xfer_default_max_bytes
-  | Some s -> (
-      match int_of_string_opt (String.trim s) with
-      | Some n when n > 0 -> n
-      | _ -> xfer_default_max_bytes)
+  Topup_util.env_positive_int "TOPUP_XFER_MAX_BYTES"
+    ~default:xfer_default_max_bytes
 
 (* Resolve TOPUP_XFER_DIR:
    - Some path     : directory to use as the default destination.
@@ -398,74 +394,6 @@ let xfer_dir () : string option =
       | Some home when home <> "" ->
           Some (Filename.concat home ".topup/xfer")
       | _ -> Some "/tmp/topup-xfer")
-
-let expand_tilde (path : string) : string =
-  if path = "~" then
-    match Sys.getenv_opt "HOME" with Some h -> h | None -> path
-  else if String.length path >= 2
-       && path.[0] = '~'
-       && path.[1] = '/'
-  then
-    match Sys.getenv_opt "HOME" with
-    | Some h -> Filename.concat h (String.sub path 2 (String.length path - 2))
-    | None -> path
-  else path
-
-let rec mkdir_p path =
-  if path = "" || path = "/" || path = "." then ()
-  else if Sys.file_exists path then ()
-  else begin
-    mkdir_p (Filename.dirname path);
-    try Unix.mkdir path 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-  end
-
-let read_file_bytes ~max_bytes path : (bytes, string) result =
-  match Unix.stat path with
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
-      Error ("no such file: " ^ path)
-  | exception Unix.Unix_error (err, _, _) ->
-      Error (Unix.error_message err ^ ": " ^ path)
-  | st ->
-      if st.Unix.st_kind <> Unix.S_REG then
-        Error ("not a regular file: " ^ path)
-      else if st.Unix.st_size > max_bytes then
-        Error
-          (Printf.sprintf
-             "file too large: %s is %d bytes; cap is %d (TOPUP_XFER_MAX_BYTES)"
-             path st.Unix.st_size max_bytes)
-      else begin
-        let ic = open_in_bin path in
-        Fun.protect
-          ~finally:(fun () -> close_in_noerr ic)
-          (fun () ->
-            let n = st.Unix.st_size in
-            let b = Bytes.create n in
-            really_input ic b 0 n;
-            Ok b)
-      end
-
-let write_file_atomic ~path bytes : (int, string) result =
-  let dir = Filename.dirname path in
-  (try mkdir_p dir
-   with exn ->
-     ignore exn);
-  let tmp = path ^ ".tmp" in
-  match
-    let oc =
-      open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o600 tmp
-    in
-    Fun.protect
-      ~finally:(fun () -> close_out_noerr oc)
-      (fun () -> output_bytes oc bytes);
-    Unix.rename tmp path
-  with
-  | () -> Ok (Bytes.length bytes)
-  | exception Unix.Unix_error (err, _, _) ->
-      (try Sys.remove tmp with _ -> ());
-      Error (Unix.error_message err ^ ": " ^ path)
-  | exception Sys_error msg ->
-      (try Sys.remove tmp with _ -> ());
-      Error msg
 
 let json_of_phase = function
   | Error.Typecheck -> `String "typecheck"
@@ -660,57 +588,41 @@ let string_field json key =
       | _ -> None)
   | _ -> None
 
-let route_remote registry host name args =
-  match Host_registry.live registry host with
-  | None ->
-      text_result ~is_error:true
-        ("host not registered: " ^ host
-       ^ " (call start_session { host: " ^ host ^ " } first)")
-  | Some rh -> (
-      let args' = remove_routing_fields args in
-      let req : Yojson.Safe.t =
-        `Assoc
-          [
-            ("jsonrpc", `String "2.0");
-            ("id", `Int 0);
-            ("method", `String "tools/call");
-            ( "params",
-              `Assoc
-                [ ("name", `String name); ("arguments", args') ] );
-          ]
-      in
-      let label = "remote " ^ host in
-      match Remote_host.send rh req with
+(* A [tools/call] request envelope routed to a peer daemon. *)
+let tools_call_request name args : Yojson.Safe.t =
+  Rpc.request ~id:(`Int 0)
+    ~params:(`Assoc [ ("name", `String name); ("arguments", args) ])
+    "tools/call"
+
+(* Route a [tools/call] to a peer daemon (remote host or local
+   subprocess). The two share everything but how the peer is looked up
+   and reached; [~live]/[~send] supply that, the rest is common. *)
+let route_to ~live ~not_registered ~label ~send name args =
+  match live () with
+  | None -> text_result ~is_error:true (not_registered ())
+  | Some peer -> (
+      let req = tools_call_request name (remove_routing_fields args) in
+      match send peer req with
       | exception Failure msg -> text_result ~is_error:true (label ^ ": " ^ msg)
       | exception exn ->
           text_result ~is_error:true (label ^ ": " ^ Printexc.to_string exn)
       | response -> unwrap_routed_response ~label response)
 
+let route_remote registry host name args =
+  route_to name args
+    ~live:(fun () -> Host_registry.live registry host)
+    ~not_registered:(fun () ->
+      "host not registered: " ^ host ^ " (call start_session { host: " ^ host
+      ^ " } first)")
+    ~label:("remote " ^ host) ~send:Remote_host.send
+
 let route_local_session pool session name args =
-  match Session_pool.live pool session with
-  | None ->
-      text_result ~is_error:true
-        ("session not registered: " ^ session
-       ^ " (call start_local_session { session: " ^ session ^ " } first)")
-  | Some ls -> (
-      let args' = remove_routing_fields args in
-      let req : Yojson.Safe.t =
-        `Assoc
-          [
-            ("jsonrpc", `String "2.0");
-            ("id", `Int 0);
-            ("method", `String "tools/call");
-            ( "params",
-              `Assoc
-                [ ("name", `String name); ("arguments", args') ] );
-          ]
-      in
-      let label = "session " ^ session in
-      match Local_session.send ls req with
-      | exception Failure msg -> text_result ~is_error:true (label ^ ": " ^ msg)
-      | exception exn ->
-          text_result ~is_error:true (label ^ ": " ^ Printexc.to_string exn)
-      | response -> unwrap_routed_response ~label response)
+  route_to name args
+    ~live:(fun () -> Session_pool.live pool session)
+    ~not_registered:(fun () ->
+      "session not registered: " ^ session
+      ^ " (call start_local_session { session: " ^ session ^ " } first)")
+    ~label:("session " ^ session) ~send:Local_session.send
 
 let connect_error_result host msg =
   let payload : Yojson.Safe.t =
@@ -852,7 +764,7 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
       | None, _ -> text_result ~is_error:true "missing 'path' argument"
       | _, None -> text_result ~is_error:true "missing 'data' argument"
       | Some path, Some data ->
-          let path = expand_tilde path in
+          let path = Topup_util.expand_tilde path in
           (match Base64.decode data with
            | Error (`Msg msg) ->
                text_result ~is_error:true ("base64 decode: " ^ msg)
@@ -867,7 +779,7 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
                       bytes_in cap)
                else
                  match
-                   write_file_atomic ~path (Bytes.of_string decoded)
+                   Topup_util.write_atomic path (Bytes.of_string decoded)
                  with
                  | Ok n ->
                      json_result
@@ -878,9 +790,9 @@ let dispatch_local session name (args : Yojson.Safe.t) : Yojson.Safe.t =
       match get_string args "path" with
       | None -> text_result ~is_error:true "missing 'path' argument"
       | Some path ->
-          let path = expand_tilde path in
+          let path = Topup_util.expand_tilde path in
           let max_bytes = xfer_max_bytes () in
-          (match read_file_bytes ~max_bytes path with
+          (match Topup_util.read_capped ~max_bytes path with
            | Error msg -> text_result ~is_error:true msg
            | Ok b ->
                let encoded = Base64.encode_string (Bytes.to_string b) in
@@ -1047,18 +959,7 @@ let dispatch_pool_lifecycle pool name (args : Yojson.Safe.t) : Yojson.Safe.t =
   | _ -> text_result ~is_error:true ("unknown tool: " ^ name)
 
 let send_internal_tool rh ~name ~(args : Yojson.Safe.t) : Yojson.Safe.t =
-  let req : Yojson.Safe.t =
-    `Assoc
-      [
-        ("jsonrpc", `String "2.0");
-        ("id", `Int 0);
-        ("method", `String "tools/call");
-        ( "params",
-          `Assoc
-            [ ("name", `String name); ("arguments", args) ] );
-      ]
-  in
-  Remote_host.send rh req
+  Remote_host.send rh (tools_call_request name args)
 
 let ( let* ) = Result.bind
 
@@ -1087,14 +988,14 @@ let do_push_file rh ~label ~args =
       (fun () -> "missing 'local_path' argument")
       (Option.to_result ~none:() (get_string args "local_path"))
   in
-  let local_path = expand_tilde local_path in
+  let local_path = Topup_util.expand_tilde local_path in
   let* remote_path =
     match get_string args "remote_path" with
-    | Some p -> Ok (expand_tilde p)
+    | Some p -> Ok (Topup_util.expand_tilde p)
     | None -> default_xfer_path ~basename:(Filename.basename local_path)
   in
   let max_bytes = xfer_max_bytes () in
-  let* b = read_file_bytes ~max_bytes local_path in
+  let* b = Topup_util.read_capped ~max_bytes local_path in
   let data = Base64.encode_string (Bytes.to_string b) in
   let blob_args : Yojson.Safe.t =
     `Assoc [ ("path", `String remote_path); ("data", `String data) ]
@@ -1112,10 +1013,10 @@ let do_pull_file rh ~label ~args =
       (fun () -> "missing 'remote_path' argument")
       (Option.to_result ~none:() (get_string args "remote_path"))
   in
-  let remote_path = expand_tilde remote_path in
+  let remote_path = Topup_util.expand_tilde remote_path in
   let* local_path =
     match get_string args "local_path" with
-    | Some p -> Ok (expand_tilde p)
+    | Some p -> Ok (Topup_util.expand_tilde p)
     | None -> default_xfer_path ~basename:(Filename.basename remote_path)
   in
   let blob_args : Yojson.Safe.t = `Assoc [ ("path", `String remote_path) ] in
@@ -1140,7 +1041,7 @@ let do_pull_file rh ~label ~args =
            cap)
     else Ok ()
   in
-  let* m = write_file_atomic ~path:local_path (Bytes.of_string decoded) in
+  let* m = Topup_util.write_atomic local_path (Bytes.of_string decoded) in
   Ok
     (`Assoc [ ("local_path", `String local_path); ("bytes", `Int m) ]
       : Yojson.Safe.t)

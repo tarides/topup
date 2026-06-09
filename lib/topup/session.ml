@@ -33,24 +33,7 @@ let init_findlib () =
   try Eval_backend.init_findlib () with _ -> ()
 
 let ensure_parent_dir path =
-  let dir = Filename.dirname path in
-  if dir = "" || dir = "." || dir = "/" then ()
-  else
-    try Unix.mkdir dir 0o700 with
-    | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    | _ -> ()
-
-let mkdir_p path =
-  let rec loop p =
-    if p = "" || p = "/" || p = "." then ()
-    else begin
-      loop (Filename.dirname p);
-      match Unix.mkdir p 0o700 with
-      | () -> ()
-      | exception Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
+  try Topup_util.mkdir_p (Filename.dirname path) with _ -> ()
 
 let starts_with_directive s =
   let n = String.length s in
@@ -141,7 +124,7 @@ let create ?log_path ?checkpoint_dir () =
   install_prelude ();
   (match checkpoint_dir with
    | None -> ()
-   | Some dir -> (try mkdir_p dir with _ -> ()));
+   | Some dir -> (try Topup_util.mkdir_p dir with _ -> ()));
   {
     history = [];
     main_pid = Unix.getpid ();
@@ -200,16 +183,23 @@ let eval ?timeout t source =
   let value_repr = ref None in
   let ty = ref None in
   let error = ref None in
-  let done_flag = Atomic.make false in
+  let eval_complete = Atomic.make false in
   let timeout_fired = Atomic.make false in
   let watchdog secs () =
     Thread.delay secs;
-    if not (Atomic.get done_flag) then begin
+    if not (Atomic.get eval_complete) then begin
       Atomic.set timeout_fired true;
       try Unix.kill t.main_pid Sys.sigint with _ -> ()
     end
   in
   let wd = Option.map (fun secs -> Thread.create (watchdog secs) ()) timeout in
+  (* A [Sys.Break] reaching the eval loop means SIGINT fired — from the
+     watchdog (timeout) or an external [cancel]. Record which and stop. *)
+  let on_break () =
+    let reason = if Atomic.get timeout_fired then "timed out" else "cancelled" in
+    error := cancelled_error reason;
+    raise Stop
+  in
   let do_eval () =
     let lexbuf = Lexing.from_string source in
     Location.init lexbuf "<eval>";
@@ -228,13 +218,7 @@ let eval ?timeout t source =
         (try
            let _ : bool = Eval_backend.execute_phrase true sink phrase in
            match !last_outcome with
-           | Some (Ophr_exception (Sys.Break, _)) ->
-               let reason =
-                 if Atomic.get timeout_fired then "timed out"
-                 else "cancelled"
-               in
-               error := cancelled_error reason;
-               raise Stop
+           | Some (Ophr_exception (Sys.Break, _)) -> on_break ()
            | Some (Ophr_exception (exn, _)) ->
                error := Some (Error.of_runtime_exn exn);
                raise Stop
@@ -245,12 +229,7 @@ let eval ?timeout t source =
            | None -> ()
          with
         | Stop -> raise Stop
-        | Sys.Break ->
-            let reason =
-              if Atomic.get timeout_fired then "timed out" else "cancelled"
-            in
-            error := cancelled_error reason;
-            raise Stop
+        | Sys.Break -> on_break ()
         | exn ->
             error := Some (Error.of_exn exn);
             raise Stop)
@@ -258,7 +237,7 @@ let eval ?timeout t source =
     with Stop -> ()
   in
   let (), out, err = Capture.with_capture do_eval in
-  Atomic.set done_flag true;
+  Atomic.set eval_complete true;
   Option.iter Thread.join wd;
   Eval_backend.print_out_phrase := prev_print;
   t.history <- source :: t.history;
@@ -384,16 +363,11 @@ let read_file_opt path =
       close_in ic;
       Bytes.unsafe_to_string buf
 
+(* Raises [Sys_error] on failure; [checkpoint]/[restore] catch it. *)
 let write_file_atomic path content =
-  let tmp = path ^ ".tmp" in
-  let oc =
-    open_out_gen
-      [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
-      0o600 tmp
-  in
-  output_string oc content;
-  close_out oc;
-  Unix.rename tmp path
+  match Topup_util.write_atomic path (Bytes.unsafe_of_string content) with
+  | Ok _ -> ()
+  | Error msg -> raise (Sys_error msg)
 
 let checkpoint_path t label =
   match t.checkpoint_dir with
@@ -412,7 +386,7 @@ let checkpoint t ~label =
       | Some log, Some dst -> (
           try
             (match t.checkpoint_dir with
-             | Some d -> (try mkdir_p d with _ -> ())
+             | Some d -> (try Topup_util.mkdir_p d with _ -> ())
              | None -> ());
             let content = read_file_opt log in
             write_file_atomic dst content;

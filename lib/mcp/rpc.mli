@@ -15,3 +15,17 @@ val read_message : in_channel -> message option
 
 (** Write one JSON-RPC message to [oc] and flush. *)
 val write_message : out_channel -> message -> unit
+
+(** {2 Envelope constructors}
+
+    Single home for the [("jsonrpc", "2.0")] boilerplate. *)
+
+(** A request: [{ jsonrpc; id; method; params? }]. *)
+val request : ?params:message -> id:message -> string -> message
+
+(** A success response: [{ jsonrpc; id; result }]. *)
+val response : id:message -> message -> message
+
+(** An error response: [{ jsonrpc; id; error = { code; message } }].
+    [code] defaults to [-32603] (internal error). *)
+val error : ?code:int -> ?message:string -> message -> message

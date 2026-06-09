@@ -52,18 +52,6 @@ let read_file path =
       close_in ic;
       Ok (Bytes.unsafe_to_string buf)
 
-let mkdir_p path =
-  let rec loop p =
-    if p = "" || p = "/" || p = "." then ()
-    else begin
-      loop (Filename.dirname p);
-      match Unix.mkdir p 0o755 with
-      | () -> ()
-      | exception Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
-
 let dir_entries path =
   try Array.to_list (Sys.readdir path) with Sys_error _ -> []
 
@@ -157,82 +145,78 @@ let run_dune ~out =
   let ok = status = Unix.WEXITED 0 in
   (combined, ok)
 
-let compile_to_binary ~log_path ~entry ~out ~libraries =
-  match log_path with
-  | None ->
-      Error
-        "compile_to_binary requires phrase logging (TOPUP_LOG is off)"
-  | Some log -> (
-      if not (Sys.file_exists log) then
-        Error ("phrase log not found at " ^ log)
+(* Ensure [out] is a usable output directory: create it when absent;
+   when present it must be a directory that is either empty or already a
+   promote target (carries the marker) — never clobber unrelated content. *)
+let prepare_out_dir out : (unit, string) Stdlib.result =
+  if Sys.file_exists out then
+    if not (Sys.is_directory out) then
+      Error ("out exists and is not a directory: " ^ out)
+    else
+      let entries = dir_entries out in
+      if entries = [] || List.exists (fun n -> n = marker_filename) entries
+      then Ok ()
       else
-        match validate_entry entry with
-        | Error _ as e -> e
-        | Ok () -> (
-            match validate_libraries libraries with
-            | Error _ as e -> e
-            | Ok () ->
-            if Filename.is_relative out then
-              Error "out must be an absolute path"
-            else
-              let existing_check =
-                if Sys.file_exists out then
-                  if not (Sys.is_directory out) then
-                    Error ("out exists and is not a directory: " ^ out)
-                  else
-                    let entries = dir_entries out in
-                    if entries = [] then Ok ()
-                    else if
-                      List.exists (fun n -> n = marker_filename) entries
-                    then Ok ()
-                    else
-                      Error
-                        ("out directory is not empty and lacks the \
-                          .topup-promote marker; refuse to clobber: "
-                       ^ out)
-                else
-                  try
-                    mkdir_p out;
-                    Ok ()
-                  with exn ->
-                    Error
-                      ("could not create out directory: "
-                     ^ Printexc.to_string exn)
-              in
-              match existing_check with
-              | Error _ as e -> e
-              | Ok () -> (
-                  match read_file log with
-                  | Error msg -> Error ("read phrase log: " ^ msg)
-                  | Ok log_contents ->
-                      (try
-                         write_file
-                           (Filename.concat out marker_filename) "";
-                         synthesise_dune_project ~out;
-                         synthesise_dune ~out ~libraries;
-                         synthesise_main ~out ~log_contents ~entry;
-                         (* Remove the leftover binary from a prior run:
-                            dune would otherwise reject "Multiple rules
-                            generated for main.exe" (executable target +
-                            file present in source tree). *)
-                         (try
-                            Unix.unlink (Filename.concat out "main.exe")
-                          with _ -> ());
-                         let build_log, ok = run_dune ~out in
-                         if ok then begin
-                           let src =
-                             Filename.concat out "_build/default/main.exe"
-                           in
-                           let dst = Filename.concat out "main.exe" in
-                           copy_file ~src ~dst;
-                           Ok { binary_path = dst; build_log; ok = true }
-                         end
-                         else
-                           Ok { binary_path = ""; build_log; ok = false }
-                       with
-                      | Unix.Unix_error (err, fn, _) ->
-                          Error
-                            (Printf.sprintf "compile_to_binary: %s: %s"
-                               fn (Unix.error_message err))
-                      | Sys_error msg ->
-                          Error ("compile_to_binary: " ^ msg)))))
+        Error
+          ("out directory is not empty and lacks the .topup-promote marker; \
+            refuse to clobber: " ^ out)
+  else
+    try
+      (* 0o755, not the 0o700 of topup's internal state dirs: [out] is the
+         operator-chosen output directory for a compiled binary, expected to
+         be readable like any build artefact. *)
+      Topup_util.mkdir_p ~mode:0o755 out;
+      Ok ()
+    with exn ->
+      Error ("could not create out directory: " ^ Printexc.to_string exn)
+
+(* Synthesise the dune project at the prepared [out], build it, and copy
+   out the binary. A clean build failure is still an [Ok] result with
+   [ok = false]; only I/O faults are [Error]. *)
+let build_in_out ~out ~libraries ~entry ~log_contents :
+    (result, string) Stdlib.result =
+  try
+    write_file (Filename.concat out marker_filename) "";
+    synthesise_dune_project ~out;
+    synthesise_dune ~out ~libraries;
+    synthesise_main ~out ~log_contents ~entry;
+    (* Remove the leftover binary from a prior run: dune would otherwise
+       reject "Multiple rules generated for main.exe" (executable target +
+       file present in source tree). *)
+    (try Unix.unlink (Filename.concat out "main.exe") with _ -> ());
+    let build_log, ok = run_dune ~out in
+    if ok then begin
+      let dst = Filename.concat out "main.exe" in
+      copy_file ~src:(Filename.concat out "_build/default/main.exe") ~dst;
+      Ok { binary_path = dst; build_log; ok = true }
+    end
+    else Ok { binary_path = ""; build_log; ok = false }
+  with
+  | Unix.Unix_error (err, fn, _) ->
+      Error
+        (Printf.sprintf "compile_to_binary: %s: %s" fn
+           (Unix.error_message err))
+  | Sys_error msg -> Error ("compile_to_binary: " ^ msg)
+
+let ( let* ) = Result.bind
+
+let compile_to_binary ~log_path ~entry ~out ~libraries =
+  let* log =
+    match log_path with
+    | None ->
+        Error "compile_to_binary requires phrase logging (TOPUP_LOG is off)"
+    | Some log ->
+        if Sys.file_exists log then Ok log
+        else Error ("phrase log not found at " ^ log)
+  in
+  let* () = validate_entry entry in
+  let* () = validate_libraries libraries in
+  let* () =
+    if Filename.is_relative out then Error "out must be an absolute path"
+    else Ok ()
+  in
+  let* () = prepare_out_dir out in
+  let* log_contents =
+    Result.map_error (fun msg -> "read phrase log: " ^ msg) (read_file log)
+  in
+  build_in_out ~out ~libraries ~entry ~log_contents

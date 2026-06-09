@@ -23,24 +23,8 @@ let env_socket_for host =
   in
   Sys.getenv_opt key
 
-let iso8601_utc_now () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.Unix.tm_year + 1900)
-    (tm.Unix.tm_mon + 1)
-    tm.Unix.tm_mday
-    tm.Unix.tm_hour
-    tm.Unix.tm_min
-    tm.Unix.tm_sec
-
 let initialize_request : Yojson.Safe.t =
-  `Assoc
-    [
-      ("jsonrpc", `String "2.0");
-      ("id", `Int 0);
-      ("method", `String "initialize");
-    ]
+  Rpc.request ~id:(`Int 0) "initialize"
 
 let do_handshake oc ic =
   Rpc.write_message oc initialize_request;
@@ -118,24 +102,8 @@ let on_request (msg : Yojson.Safe.t) : Yojson.Safe.t =
       (* Confine the remote peer's reach into our local filesystem. *)
       let confine_root = Blob.backchannel_confine_root () in
       let result = Blob.dispatch ?confine_root name args in
-      `Assoc
-        [
-          ("jsonrpc", `String "2.0");
-          ("id", id);
-          ("result", result);
-        ]
-  | _ ->
-      `Assoc
-        [
-          ("jsonrpc", `String "2.0");
-          ("id", `Null);
-          ( "error",
-            `Assoc
-              [
-                ("code", `Int (-32600));
-                ("message", `String "invalid request");
-              ] );
-        ]
+      Rpc.response ~id result
+  | _ -> Rpc.error ~code:(-32600) ~message:"invalid request" `Null
 
 (* Tell the remote daemon "I can dispatch _send_blob / _recv_blob
    on inbound requests over this channel" so it installs the muxed
@@ -253,7 +221,7 @@ let send t (req : Yojson.Safe.t) : Yojson.Safe.t =
   | Some c -> (
       match Channel.request c.channel req with
       | response ->
-          t.last_seen <- Some (iso8601_utc_now ());
+          t.last_seen <- Some (Topup_util.iso8601_utc_now ());
           response
       | exception Failure msg ->
           (* Mark connection dead on channel-level error. *)

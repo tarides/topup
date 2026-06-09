@@ -2,20 +2,11 @@ let protocol_version = "2024-11-05"
 let server_name = "topup"
 let server_version = "0.1.0"
 
-let json_result id result : Yojson.Safe.t =
-  `Assoc
-    [
-      ("jsonrpc", `String "2.0"); ("id", id); ("result", result);
-    ]
+let json_result id result : Yojson.Safe.t = Rpc.response ~id result
 
-let json_error ?(code = -32603) ?(message = "Internal error") id : Yojson.Safe.t =
-  `Assoc
-    [
-      ("jsonrpc", `String "2.0");
-      ("id", id);
-      ( "error",
-        `Assoc [ ("code", `Int code); ("message", `String message) ] );
-    ]
+let json_error ?(code = -32603) ?(message = "Internal error") id :
+    Yojson.Safe.t =
+  Rpc.error ~code ~message id
 
 let initialize_result registry pool : Yojson.Safe.t =
   let instructions =

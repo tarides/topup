@@ -20,21 +20,8 @@ type t = {
   mutex : Mutex.t;
 }
 
-let iso8601_utc_now () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.Unix.tm_year + 1900)
-    (tm.Unix.tm_mon + 1)
-    tm.Unix.tm_mday tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-
 let initialize_request : Yojson.Safe.t =
-  `Assoc
-    [
-      ("jsonrpc", `String "2.0");
-      ("id", `Int 0);
-      ("method", `String "initialize");
-    ]
+  Rpc.request ~id:(`Int 0) "initialize"
 
 let do_handshake oc ic =
   Rpc.write_message oc initialize_request;
@@ -188,6 +175,18 @@ let run_prewarm ~oc ~ic ~name ~prewarm_path =
       | Some _ -> Error (Printf.sprintf "prewarm %s: malformed result" name))
   | Some _ -> Error (Printf.sprintf "prewarm %s: malformed response" name)
 
+(* Run the optional prewarm phrase; on failure run [on_fail] (socket
+   close, plus subprocess kill when we own one) before re-raising. *)
+let apply_prewarm ~name ~prewarm ~oc ~ic ~on_fail =
+  match prewarm with
+  | None -> ()
+  | Some pre -> (
+      match run_prewarm ~oc ~ic ~name ~prewarm_path:pre with
+      | Ok () -> ()
+      | Error msg ->
+          on_fail ();
+          failwith msg)
+
 let open_conn ~name ~local_socket ~prewarm =
   match env_socket_for name with
   | Some path ->
@@ -195,14 +194,8 @@ let open_conn ~name ~local_socket ~prewarm =
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
       let _ = do_handshake oc ic in
-      (match prewarm with
-       | None -> ()
-       | Some pre -> (
-           match run_prewarm ~oc ~ic ~name ~prewarm_path:pre with
-           | Ok () -> ()
-           | Error msg ->
-               (try Unix.close sock with _ -> ());
-               failwith msg));
+      apply_prewarm ~name ~prewarm ~oc ~ic ~on_fail:(fun () ->
+          try Unix.close sock with _ -> ());
       { proc = None; sock; ic; oc }
   | None ->
       let proc = spawn_subprocess ~name ~socket_path:local_socket in
@@ -217,16 +210,11 @@ let open_conn ~name ~local_socket ~prewarm =
         end
         else
           match try_connect_and_handshake ~path:local_socket with
-          | Ok (sock, ic, oc) -> (
-              match prewarm with
-              | None -> { proc = Some proc; sock; ic; oc }
-              | Some pre -> (
-                  match run_prewarm ~oc ~ic ~name ~prewarm_path:pre with
-                  | Ok () -> { proc = Some proc; sock; ic; oc }
-                  | Error msg ->
-                      (try Unix.close sock with _ -> ());
-                      kill_subprocess proc;
-                      failwith msg))
+          | Ok (sock, ic, oc) ->
+              apply_prewarm ~name ~prewarm ~oc ~ic ~on_fail:(fun () ->
+                  (try Unix.close sock with _ -> ());
+                  kill_subprocess proc);
+              { proc = Some proc; sock; ic; oc }
           | Error msg ->
               (try Unix.sleepf 0.1 with _ -> ());
               attempt msg
@@ -310,7 +298,7 @@ let send t (req : Yojson.Safe.t) : Yojson.Safe.t =
           Mutex.unlock t.mutex;
           failwith ("local session " ^ t.name ^ ": EOF awaiting response")
       | Some j ->
-          t.last_seen <- Some (iso8601_utc_now ());
+          t.last_seen <- Some (Topup_util.iso8601_utc_now ());
           Mutex.unlock t.mutex;
           j
       | exception exn ->

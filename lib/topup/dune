@@ -3,4 +3,4 @@
  (public_name topup)
  (modes byte native)
  (virtual_modules eval_backend)
- (libraries compiler-libs.common unix threads.posix))
+ (libraries compiler-libs.common topup_util unix threads.posix))

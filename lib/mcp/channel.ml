@@ -123,16 +123,7 @@ let deliver_response t id msg =
       Mutex.unlock slot.mu
 
 let error_response ~id ~code ~message : Yojson.Safe.t =
-  let id_field =
-    match id with Some j -> j | None -> `Null
-  in
-  `Assoc
-    [
-      ("jsonrpc", `String "2.0");
-      ("id", id_field);
-      ( "error",
-        `Assoc [ ("code", `Int code); ("message", `String message) ] );
-    ]
+  Rpc.error ~code ~message (match id with Some j -> j | None -> `Null)
 
 let write_message t (msg : Yojson.Safe.t) =
   Mutex.lock t.write_mu;

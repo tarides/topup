@@ -1,26 +1,14 @@
-(* Mirror of [tools.ml]'s [xfer_max_bytes] etc. Kept here (no shared
-   module) so [Blob] has zero non-stdlib dependencies and can be
-   called from the back-channel reader thread without coupling to
-   the rest of [Tools]. *)
+(* The byte-cap, tilde-expansion, and file-I/O primitives live in
+   [Topup_util] (stdlib + unix only). [Blob] is reached from the
+   back-channel reader thread, so it deliberately depends on nothing
+   heavier than that — sharing via [Topup_util] keeps it decoupled from
+   the rest of [Tools] while removing the former copy-paste. *)
 
 let xfer_default_max_bytes = 16 * 1024 * 1024
 
 let xfer_max_bytes () =
-  match Sys.getenv_opt "TOPUP_XFER_MAX_BYTES" with
-  | None | Some "" -> xfer_default_max_bytes
-  | Some s -> (
-      match int_of_string_opt (String.trim s) with
-      | Some n when n > 0 -> n
-      | _ -> xfer_default_max_bytes)
-
-let expand_tilde (path : string) : string =
-  if path = "~" then
-    match Sys.getenv_opt "HOME" with Some h -> h | None -> path
-  else if String.length path >= 2 && path.[0] = '~' && path.[1] = '/' then
-    match Sys.getenv_opt "HOME" with
-    | Some h -> Filename.concat h (String.sub path 2 (String.length path - 2))
-    | None -> path
-  else path
+  Topup_util.env_positive_int "TOPUP_XFER_MAX_BYTES"
+    ~default:xfer_default_max_bytes
 
 (* Lexically resolve "." and ".." in an absolute path without touching
    the filesystem. Pure string work — no [Str]. *)
@@ -61,7 +49,7 @@ let backchannel_confine_root () : string option =
    parent already exists — [realpath] it to catch symlink escapes. *)
 let resolve_path ?confine_root path : (string, string) result =
   match confine_root with
-  | None -> Ok (expand_tilde path)
+  | None -> Ok (Topup_util.expand_tilde path)
   | Some root ->
       let root = normalize_abs (if Filename.is_relative root
                                 then Filename.concat (Sys.getcwd ()) root
@@ -83,58 +71,6 @@ let resolve_path ?confine_root path : (string, string) result =
              Error "path escapes back-channel root via symlink"
          | _ -> Ok joined
          | exception Unix.Unix_error _ -> Ok joined (* parent not yet created *))
-
-let rec mkdir_p path =
-  if path = "" || path = "/" || path = "." then ()
-  else if Sys.file_exists path then ()
-  else begin
-    mkdir_p (Filename.dirname path);
-    try Unix.mkdir path 0o700
-    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-  end
-
-let read_file_bytes ~max_bytes path : (bytes, string) result =
-  match Unix.stat path with
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
-      Error ("no such file: " ^ path)
-  | exception Unix.Unix_error (err, _, _) ->
-      Error (Unix.error_message err ^ ": " ^ path)
-  | st ->
-      if st.Unix.st_kind <> Unix.S_REG then
-        Error ("not a regular file: " ^ path)
-      else if st.Unix.st_size > max_bytes then
-        Error
-          (Printf.sprintf
-             "file too large: %s is %d bytes; cap is %d (TOPUP_XFER_MAX_BYTES)"
-             path st.Unix.st_size max_bytes)
-      else begin
-        let ic = open_in_bin path in
-        Fun.protect
-          ~finally:(fun () -> close_in_noerr ic)
-          (fun () ->
-            let n = st.Unix.st_size in
-            let b = Bytes.create n in
-            really_input ic b 0 n;
-            Ok b)
-      end
-
-let write_file_atomic ~path bytes : (int, string) result =
-  let dir = Filename.dirname path in
-  (try mkdir_p dir with _ -> ());
-  let tmp = path ^ ".tmp" in
-  match
-    let oc =
-      open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o600 tmp
-    in
-    Fun.protect
-      ~finally:(fun () -> close_out_noerr oc)
-      (fun () -> output_bytes oc bytes);
-    Unix.rename tmp path
-  with
-  | () -> Ok (Bytes.length bytes)
-  | exception Unix.Unix_error (err, _, _) ->
-      (try Sys.remove tmp with _ -> ());
-      Error (Unix.error_message err ^ ": " ^ path)
 
 let get_string (args : Yojson.Safe.t) key : string option =
   match args with
@@ -179,7 +115,7 @@ let dispatch ?confine_root (name : string) (args : Yojson.Safe.t) :
                       (TOPUP_XFER_MAX_BYTES)"
                      n cap)
               else
-                match write_file_atomic ~path (Bytes.of_string decoded) with
+                match Topup_util.write_atomic path (Bytes.of_string decoded) with
                 | Ok m ->
                     json_result
                       (`Assoc [ ("path", `String path); ("bytes", `Int m) ])
@@ -192,7 +128,7 @@ let dispatch ?confine_root (name : string) (args : Yojson.Safe.t) :
           | Error msg -> text_result ~is_error:true msg
           | Ok path ->
           let max_bytes = xfer_max_bytes () in
-          match read_file_bytes ~max_bytes path with
+          match Topup_util.read_capped ~max_bytes path with
           | Error msg -> text_result ~is_error:true msg
           | Ok b ->
               let encoded = Base64.encode_string (Bytes.to_string b) in
