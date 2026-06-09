@@ -358,13 +358,25 @@ let run ~ic ~oc ~session ~registry ~pool ?default_host () =
        raise exn)
 
 let prepare_socket_path path =
-  match Unix.stat path with
+  (* [lstat], not [stat]: we must see a symlink *as* a symlink and refuse
+     it, so an attacker can't pre-plant a symlink at [path] and have us
+     unlink/clobber its target. We also only ever unlink a genuine
+     socket — never a regular file or directory. *)
+  match Unix.lstat path with
   | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
   | exception Unix.Unix_error (err, _, _) ->
       failwith
         (Printf.sprintf "topup-mcp: cannot stat %s: %s" path
            (Unix.error_message err))
-  | _ ->
+  | st ->
+      (* Refuse a symlink: following it on [unlink] would let an
+         attacker who planted it delete an arbitrary target. A stale
+         regular file or dead socket left by a crash is still cleaned
+         up below. *)
+      if st.Unix.st_kind = Unix.S_LNK then
+        failwith
+          (Printf.sprintf
+             "topup-mcp: refusing to bind: %s is a symlink" path);
       let probe = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
       let live =
         match Unix.connect probe (Unix.ADDR_UNIX path) with
@@ -384,7 +396,15 @@ let prepare_socket_path path =
 let serve_unix ~path ~session ~registry ~pool ?default_host () =
   prepare_socket_path path;
   let server = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  (* Create the socket owner-only. [umask] makes the bind atomic w.r.t.
+     permissions (no window where the socket is group/world-accessible);
+     the explicit [chmod] is belt-and-suspenders for platforms whose
+     bind ignores umask for sockets. AF_UNIX connect needs write
+     permission, so 0o600 restricts connections to the owning user. *)
+  let old_umask = Unix.umask 0o177 in
   Unix.bind server (Unix.ADDR_UNIX path);
+  ignore (Unix.umask old_umask);
+  (try Unix.chmod path 0o600 with Unix.Unix_error _ -> ());
   Unix.listen server 1;
   at_exit (fun () ->
       try Unix.unlink path with _ -> ());

@@ -669,6 +669,116 @@ let test_pull_file_unregistered_host () =
       if not (contains text "host not registered") then
         fail "pull_file unknown host: expected 'host not registered'")
 
+(* ---- Security regression tests ---- *)
+
+(* F1: ssh host argument-injection validation. *)
+let test_validate_host () =
+  let ok = function Ok () -> true | Error _ -> false in
+  let bad r = not (ok r) in
+  if not (ok (Mcp.Proxy.validate_host "host")) then fail "validate_host: host";
+  if not (ok (Mcp.Proxy.validate_host "user@host.example.com")) then
+    fail "validate_host: user@host";
+  if not (bad (Mcp.Proxy.validate_host "-oProxyCommand=touch /tmp/x")) then
+    fail "validate_host: leading-dash option injection not rejected";
+  if not (bad (Mcp.Proxy.validate_host "a b")) then
+    fail "validate_host: space not rejected";
+  if not (bad (Mcp.Proxy.validate_host "a;b")) then
+    fail "validate_host: semicolon not rejected";
+  if not (bad (Mcp.Proxy.validate_host "")) then
+    fail "validate_host: empty not rejected";
+  if not (ok (Mcp.Proxy.validate_remote_socket "/tmp/x.sock")) then
+    fail "validate_remote_socket: absolute";
+  if not (bad (Mcp.Proxy.validate_remote_socket "rel/x.sock")) then
+    fail "validate_remote_socket: relative not rejected";
+  if not (bad (Mcp.Proxy.validate_remote_socket "/tmp/a\nb")) then
+    fail "validate_remote_socket: newline not rejected"
+
+(* Parse the {content;isError} object [Blob.dispatch] returns. *)
+let blob_is_error j =
+  match j with
+  | `Assoc fs -> (
+      match List.assoc_opt "isError" fs with Some (`Bool b) -> b | _ -> false)
+  | _ -> false
+
+let blob_text j =
+  match j with
+  | `Assoc fs -> (
+      match List.assoc_opt "content" fs with
+      | Some (`List (`Assoc cfs :: _)) -> (
+          match List.assoc_opt "text" cfs with
+          | Some (`String s) -> s
+          | _ -> "")
+      | _ -> "")
+  | _ -> ""
+
+(* F2: back-channel blob path confinement. *)
+let test_blob_confinement () =
+  let root =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "topup-confine-%d" (Unix.getpid ()))
+  in
+  (try Unix.mkdir root 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let recv path data =
+    Mcp.Blob.dispatch ~confine_root:root "_recv_blob"
+      (`Assoc
+         [ ("path", `String path);
+           ("data", `String (Base64.encode_string data)) ])
+  in
+  (* An escaping relative path is rejected. *)
+  let r = recv "../escape.bin" "x" in
+  if not (blob_is_error r && contains (blob_text r) "escapes") then
+    fail "blob confinement: ../escape not rejected";
+  (* An absolute path is reinterpreted *under* the root, never written
+     to the real location. *)
+  let r = recv "/etc/cron.d/topup-pwn" "x" in
+  if blob_is_error r then fail "blob confinement: in-root absolute rejected";
+  if Sys.file_exists "/etc/cron.d/topup-pwn" then
+    fail "blob confinement: wrote outside root!";
+  if not (Sys.file_exists (Filename.concat root "etc/cron.d/topup-pwn")) then
+    fail "blob confinement: absolute path not remapped under root";
+  (* An in-root relative write round-trips through _send_blob. *)
+  let r = recv "ok.bin" "hello-confined" in
+  if blob_is_error r then fail "blob confinement: in-root write rejected";
+  let r =
+    Mcp.Blob.dispatch ~confine_root:root "_send_blob"
+      (`Assoc [ ("path", `String "ok.bin") ])
+  in
+  if blob_is_error r then fail "blob confinement: in-root read rejected";
+  (* Unconfined dispatch (no confine_root) still honours absolute paths
+     — the forward push/pull path must keep working. *)
+  let tmp = Filename.concat root "unconfined.bin" in
+  let r =
+    Mcp.Blob.dispatch "_recv_blob"
+      (`Assoc
+         [ ("path", `String tmp);
+           ("data", `String (Base64.encode_string "x")) ])
+  in
+  if blob_is_error r then fail "blob unconfined: absolute write rejected"
+
+(* F3: bounded JSON-RPC message reader. *)
+let test_bounded_reader () =
+  Unix.putenv "TOPUP_MAX_MESSAGE_BYTES" "64";
+  let ic, oc = pipe_pair () in
+  output_string oc (String.make 200 'a');
+  output_char oc '\n';
+  flush oc;
+  (match Mcp.Rpc.read_message ic with
+   | exception Mcp.Rpc.Message_too_large _ -> ()
+   | exception e ->
+       fail ("bounded reader: unexpected exn " ^ Printexc.to_string e)
+   | _ -> fail "bounded reader: expected Message_too_large");
+  Unix.putenv "TOPUP_MAX_MESSAGE_BYTES" ""
+
+(* F7: compile_to_binary library-name validation. *)
+let test_validate_libraries () =
+  let ok = function Ok () -> true | Error _ -> false in
+  if not (ok (Topup.Promote.validate_libraries [ "re"; "yojson.safe" ])) then
+    fail "validate_libraries: good names rejected";
+  if ok (Topup.Promote.validate_libraries [ "foo)" ]) then
+    fail "validate_libraries: sexp metachar accepted";
+  if ok (Topup.Promote.validate_libraries [ "" ]) then
+    fail "validate_libraries: empty name accepted"
+
 let () =
   let spill_dir =
     Filename.concat (Filename.get_temp_dir_name ())
@@ -691,5 +801,9 @@ let () =
   test_push_file_requires_host ();
   test_push_file_rejects_session ();
   test_pull_file_unregistered_host ();
+  test_validate_host ();
+  test_blob_confinement ();
+  test_bounded_reader ();
+  test_validate_libraries ();
   let _ : Yojson.Safe.t list = Mcp.Tools.descriptors in
   print_endline "test_mcp: ok"

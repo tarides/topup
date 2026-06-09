@@ -10,6 +10,15 @@ type slot = {
    in-flight eval rather than serialising behind it. *)
 type queue_item = Request_item of Yojson.Safe.t
 
+(* Resource caps against a flooding peer. [max_pending] bounds our own
+   outbound in-flight requests; [max_work_queue] bounds inbound requests
+   awaiting the dispatcher; [max_notif_threads] bounds the fire-and-
+   forget notification threads so a notification flood can't spawn
+   threads without bound. *)
+let max_pending = 10_000
+let max_work_queue = 1024
+let max_notif_threads = 16
+
 type t = {
   ic : in_channel;
   oc : out_channel;
@@ -29,6 +38,9 @@ type t = {
   work_mu : Mutex.t;
   work_cv : Condition.t;
   mutable reader_done : bool;
+  (* In-flight notification threads, capped at [max_notif_threads]. *)
+  mutable notif_in_flight : int;
+  notif_mu : Mutex.t;
 }
 
 let set_id (req : Yojson.Safe.t) id : Yojson.Safe.t =
@@ -130,9 +142,14 @@ let write_message t (msg : Yojson.Safe.t) =
 
 let enqueue t item =
   Mutex.lock t.work_mu;
-  Queue.add item t.work_queue;
-  Condition.signal t.work_cv;
-  Mutex.unlock t.work_mu
+  (* Drop inbound requests past the cap: a peer flooding requests must
+     not grow this queue without bound. *)
+  if Queue.length t.work_queue >= max_work_queue then Mutex.unlock t.work_mu
+  else begin
+    Queue.add item t.work_queue;
+    Condition.signal t.work_cv;
+    Mutex.unlock t.work_mu
+  end
 
 let process_request t msg =
   let id_field =
@@ -201,13 +218,25 @@ let rec reader_loop t =
              (* Notifications fire-and-forget on their own thread —
                 they must NOT serialise behind queued requests
                 ([notifications/cancelled] has to interrupt an
-                in-flight eval, not wait for it to finish). *)
-             let _ : Thread.t =
-               Thread.create
-                 (fun () -> try ignore (t.on_request msg) with _ -> ())
-                 ()
-             in
-             ()
+                in-flight eval, not wait for it to finish). Cap the
+                concurrent count so a notification flood can't spawn
+                threads without bound; excess notifications are dropped. *)
+             Mutex.lock t.notif_mu;
+             let may_spawn = t.notif_in_flight < max_notif_threads in
+             if may_spawn then t.notif_in_flight <- t.notif_in_flight + 1;
+             Mutex.unlock t.notif_mu;
+             if may_spawn then begin
+               let _ : Thread.t =
+                 Thread.create
+                   (fun () ->
+                     (try ignore (t.on_request msg) with _ -> ());
+                     Mutex.lock t.notif_mu;
+                     t.notif_in_flight <- t.notif_in_flight - 1;
+                     Mutex.unlock t.notif_mu)
+                   ()
+               in
+               ()
+             end
          | Other -> ()
        with _ -> ());
       if not (is_closed t) then reader_loop t
@@ -229,6 +258,8 @@ let create ~ic ~oc ~on_request =
       work_mu = Mutex.create ();
       work_cv = Condition.create ();
       reader_done = false;
+      notif_in_flight = 0;
+      notif_mu = Mutex.create ();
     }
   in
   let _ : Thread.t = Thread.create reader_loop t in
@@ -245,6 +276,10 @@ let create ~ic ~oc ~on_request =
 let request t (req : Yojson.Safe.t) : Yojson.Safe.t =
   if is_closed t then failwith "channel: closed";
   Mutex.lock t.pending_mu;
+  if Hashtbl.length t.pending >= max_pending then begin
+    Mutex.unlock t.pending_mu;
+    failwith "channel: too many pending requests"
+  end;
   let id = t.next_id in
   t.next_id <- id + 1;
   let slot =

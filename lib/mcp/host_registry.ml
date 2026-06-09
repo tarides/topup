@@ -119,7 +119,10 @@ let persist_locked t =
       (try
          ensure_parent_dir path;
          let tmp = path ^ ".tmp" in
-         let oc = open_out tmp in
+         (* 0o600: host metadata (host names) is owner-only. *)
+         let oc =
+           open_out_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 tmp
+         in
          output_string oc (Yojson.Safe.pretty_to_string j);
          output_char oc '\n';
          close_out oc;

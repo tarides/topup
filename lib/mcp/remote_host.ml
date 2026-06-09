@@ -115,7 +115,9 @@ let on_request (msg : Yojson.Safe.t) : Yojson.Safe.t =
             (n, a)
         | _ -> ("", `Assoc [])
       in
-      let result = Blob.dispatch name args in
+      (* Confine the remote peer's reach into our local filesystem. *)
+      let confine_root = Blob.backchannel_confine_root () in
+      let result = Blob.dispatch ?confine_root name args in
       `Assoc
         [
           ("jsonrpc", `String "2.0");
@@ -196,6 +198,12 @@ let open_conn ~host ~remote_socket =
       attempt "no attempt yet"
 
 let start ~host ?remote_socket () =
+  (* Reject hostile host strings up front so the error surfaces
+     uniformly — including on the [TOPUP_HOST_SOCKET_*] test-hook path,
+     which never reaches [Proxy.spawn_ssh]'s own check. *)
+  (match Proxy.validate_host host with
+   | Ok () -> ()
+   | Error msg -> failwith ("invalid host: " ^ msg));
   let remote_socket =
     match remote_socket with
     | Some p -> p

@@ -27,7 +27,9 @@ type result = {
       to avoid clobbering unrelated content.
     - [libraries]: findlib package names. Each becomes a
       [(libraries ...)] entry in the synthesised dune file. The empty
-      list means stdlib-only.
+      list means stdlib-only. Each name must match [[A-Za-z0-9._-]+]
+      (the findlib charset) so it cannot inject extra dune directives;
+      a bad name rejects with [Error _].
 
     Returns [Error msg] for input-level problems (missing log,
     invalid arg, unwritable [out]). A failed build returns
@@ -39,3 +41,8 @@ val compile_to_binary :
   out:string ->
   libraries:string list ->
   (result, string) Stdlib.result
+
+(** [validate_libraries names] returns [Ok ()] iff every name is
+    non-empty and matches the findlib charset [[A-Za-z0-9._-]+].
+    Exposed for testing; enforced by {!compile_to_binary}. *)
+val validate_libraries : string list -> (unit, string) Stdlib.result
