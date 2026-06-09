@@ -65,7 +65,10 @@ let write_file_atomic path bytes =
     (try mkdir_p dir with _ -> ());
     let tmp = path ^ ".tmp" in
     match
-      let oc = open_out_bin tmp in
+      let oc =
+        open_out_gen
+          [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o600 tmp
+      in
       Fun.protect
         ~finally:(fun () -> close_out_noerr oc)
         (fun () -> output_bytes oc bytes);

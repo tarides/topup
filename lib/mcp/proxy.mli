@@ -19,6 +19,17 @@ val connect_with_retry : path:string -> timeout:float -> Unix.file_descr
     call. *)
 val random_hex : int -> string
 
+(** [validate_host h] accepts only hosts matching [\[A-Za-z0-9._@-\]+]
+    that do not begin with ['-'], so the value cannot be reinterpreted
+    by ssh(1) as an option (argument injection). Returns [Error msg]
+    otherwise. {!spawn_ssh} enforces this; callers may use it to reject
+    early with a friendlier error. *)
+val validate_host : string -> (unit, string) result
+
+(** [validate_remote_socket p] requires an absolute path with no NUL or
+    newline. Enforced by {!spawn_ssh}. *)
+val validate_remote_socket : string -> (unit, string) result
+
 type ssh_handle = {
   ssh_pid : int;
   local_sock : string;

@@ -77,6 +77,19 @@ An unknown host returns a structured error rather than crashing.
   >   | grep -c '"isError":true'
   1
 
+A hostile `host` that ssh would parse as an option (leading `-`) is
+rejected up front — no ssh spawn, no local command execution. This is
+the argument-injection guard (a prompt-injected `start_session` is the
+realistic delivery path).
+
+  $ printf '%s\n' \
+  >   '{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"-oProxyCommand=touch pwned"}}}' \
+  >   | topup --proxy "$PWD/local.sock" \
+  >   | grep -c 'invalid host'
+  1
+  $ [ -e pwned ] && echo PWNED || echo safe
+  safe
+
 `update_host` succeeds and the description shows up in `initialize`'s
 `instructions` block next time.
 

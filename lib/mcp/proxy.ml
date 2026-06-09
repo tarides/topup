@@ -74,6 +74,38 @@ let random_hex n =
 let default_remote_socket () = "/tmp/topup-" ^ random_hex 16 ^ ".sock"
 let local_socket () = "/tmp/topup-local-" ^ random_hex 16 ^ ".sock"
 
+(* [host] is handed to ssh(1) as an argv token. ssh treats a token
+   beginning with '-' as an option, so an unvalidated host like
+   "-oProxyCommand=touch /tmp/pwned" is argument injection that runs a
+   command on the *local* machine. Restrict to a charset that admits
+   [user@host] and rejects anything ssh could reinterpret (leading '-',
+   whitespace, shell metacharacters, NUL, newline). *)
+let valid_host_char c =
+  match c with
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '.' | '_' | '-' | '@' -> true
+  | _ -> false
+
+let validate_host host =
+  if host = "" then Error "host must be non-empty"
+  else if host.[0] = '-' then
+    Error "host must not begin with '-' (ssh would parse it as an option)"
+  else if not (String.for_all valid_host_char host) then
+    Error "host may only contain [A-Za-z0-9._@-]"
+  else Ok ()
+
+(* [remote_socket] is [Filename.quote]d into the remote shell command, so
+   shell injection is already handled; this guards against a NUL (which
+   would truncate the argv token in [create_process]) or a newline, and
+   insists on an absolute path so the remote [mkdir -p]/socket bind land
+   where intended. *)
+let validate_remote_socket path =
+  if path = "" then Error "remote_socket must be non-empty"
+  else if String.exists (fun c -> c = '\000' || c = '\n' || c = '\r') path
+  then Error "remote_socket must not contain NUL or newline"
+  else if Filename.is_relative path then
+    Error "remote_socket must be an absolute path"
+  else Ok ()
+
 type ssh_handle = {
   ssh_pid : int;
   local_sock : string;
@@ -91,6 +123,12 @@ let spawn_ssh ~host ?remote_socket () =
   let remote_sock =
     match remote_socket with Some p -> p | None -> default_remote_socket ()
   in
+  (match validate_host host with
+   | Ok () -> ()
+   | Error msg -> failwith ("invalid host: " ^ msg));
+  (match validate_remote_socket remote_sock with
+   | Ok () -> ()
+   | Error msg -> failwith ("invalid remote_socket: " ^ msg));
   let local_sock = local_socket () in
   let dev_null = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0o600 in
   let stdin_read, stdin_write = Unix.pipe ~cloexec:true () in
@@ -121,6 +159,10 @@ let spawn_ssh ~host ?remote_socket () =
       "-o"; "ExitOnForwardFailure=yes";
       "-o"; "ServerAliveInterval=30";
       "-L"; Printf.sprintf "%s:%s" local_sock remote_sock;
+      (* [--] stops ssh option parsing; combined with [validate_host]'s
+         leading-'-' rejection this is belt-and-suspenders against argv
+         injection through the host token. *)
+      "--";
       host;
       remote_cmd;
     |]

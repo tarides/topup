@@ -22,6 +22,26 @@ let validate_entry s =
     Error "entry may only contain [A-Za-z0-9_']"
   else Ok ()
 
+(* Library names are interpolated verbatim into the generated [dune]
+   S-expression; restrict them to the findlib package charset so a
+   crafted name cannot inject extra dune directives or break the file. *)
+let valid_lib_char c =
+  match c with
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '.' | '_' | '-' -> true
+  | _ -> false
+
+let validate_libraries libs =
+  List.fold_left
+    (fun acc l ->
+      match acc with
+      | Error _ -> acc
+      | Ok () ->
+          if l = "" then Error "library name must be non-empty"
+          else if not (String.for_all valid_lib_char l) then
+            Error ("invalid library name " ^ l ^ " (allowed: [A-Za-z0-9._-])")
+          else Ok ())
+    (Ok ()) libs
+
 let read_file path =
   match open_in_bin path with
   | exception Sys_error msg -> Error msg
@@ -148,7 +168,10 @@ let compile_to_binary ~log_path ~entry ~out ~libraries =
       else
         match validate_entry entry with
         | Error _ as e -> e
-        | Ok () ->
+        | Ok () -> (
+            match validate_libraries libraries with
+            | Error _ as e -> e
+            | Ok () ->
             if Filename.is_relative out then
               Error "out must be an absolute path"
             else
@@ -212,4 +235,4 @@ let compile_to_binary ~log_path ~entry ~out ~libraries =
                             (Printf.sprintf "compile_to_binary: %s: %s"
                                fn (Unix.error_message err))
                       | Sys_error msg ->
-                          Error ("compile_to_binary: " ^ msg))))
+                          Error ("compile_to_binary: " ^ msg)))))

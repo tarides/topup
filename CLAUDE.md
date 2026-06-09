@@ -184,7 +184,10 @@ Lifecycle is explicit:
   performs the MCP `initialize` handshake, and registers the host.
   Idempotent on a live tunnel. Remote socket defaults to
   `~/.topup/sockets/topup.sock` on the remote side; pin it with
-  `remote_socket: "<path>"`.
+  `remote_socket: "<path>"`. `host` is validated against
+  `[A-Za-z0-9._@-]+` (and may not begin with `-`) before any ssh
+  spawn — this is the argument-injection guard (`Proxy.validate_host`,
+  see `SECURITY-AUDIT.md` F1). Don't loosen it.
 - `restart_session { host }` — kills the tunnel and re-spawns. Use
   when wedged; for a fresh OCaml environment use `reset` instead.
 - `update_host { host, description?, os? }` — set/replace metadata
@@ -203,6 +206,14 @@ Concurrency is deliberately tight: the MCP server processes one
 `tools/call` at a time; per-host serialisation is implicit. Parallel
 fan-out to distinct hosts is a separate backlog item ("Multi-connection
 socket transport with serialized dispatch").
+
+Wire-layer limits (DoS hardening, `SECURITY-AUDIT.md` F3/F4): each
+newline-delimited JSON-RPC frame is capped at `TOPUP_MAX_MESSAGE_BYTES`
+(default 64 MiB — `Rpc.read_message` raises `Message_too_large` rather
+than allocate without bound); `Channel` caps concurrent notification
+threads, the inbound work queue, and the pending-request table. The
+listening Unix socket is created `0o600` (owner-only connect), and
+`hosts.json`/`sessions.json` are persisted `0o600`.
 
 ## File transfer across the boundary (`push_file` / `pull_file`)
 
@@ -295,6 +306,15 @@ Implementation shape:
 
 Cap and atomicity: same `TOPUP_XFER_MAX_BYTES` (16 MiB default) as
 push/pull; writes are atomic (`<path>.tmp` + `Unix.rename`).
+
+Confinement: when a **remote** drives the back-channel, the local
+filesystem reach is confined to `TOPUP_BACKCHANNEL_ROOT` (default
+`$HOME/.topup/back`; `=off` disables for trusted remotes). Paths are
+reinterpreted under the root, `..` escapes and symlink escapes are
+rejected (`Blob.dispatch ~confine_root`, `SECURITY-AUDIT.md` F2). The
+forward path (the operator's own `push_file`/`pull_file`, and
+`read_back`/`write_back` on local/in-process evals) is intentionally
+**not** confined — the path is operator-chosen and local.
 
 Cancel semantics (v1): best-effort. If `Topup.read_back` is blocked
 on `Condition.wait` for a back-channel response, `SIGINT` does not

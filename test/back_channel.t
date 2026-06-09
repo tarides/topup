@@ -12,6 +12,12 @@ Hermetic sandbox.
   $ export TOPUP_XFER_DIR="$PWD/xfer"
   $ mkdir -p "$TOPUP_XFER_DIR"
 
+This exercise rides arbitrary local paths over the back channel, so it
+opts out of the default back-channel confinement (covered on its own in
+back_channel_confine.t).
+
+  $ export TOPUP_BACKCHANNEL_ROOT=off
+
 Spawn the remote daemon. Its `Topup_runtime` hook will be replaced
 by the muxed hook when the local daemon connects, so a routed
 `Topup.read_back` reaches back across the SSH-substitute socket
