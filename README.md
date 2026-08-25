@@ -20,14 +20,27 @@ number of hosts), see [MULTIHOST.md](MULTIHOST.md).
 
 ## Install
 
-Requires OCaml 5.1+ and dune.
+Requires OCaml 5.1+.
+
+From opam:
+
+```
+opam install topup
+```
+
+This installs two drivers on your `PATH`: `topup` (bytecode) and `topup-opt`
+(native). The full MCP protocol reference is published at
+<https://ocaml.org/p/topup> (or build it locally with
+`opam exec -- dune build @doc`).
+
+Or build from source with dune:
 
 ```
 opam exec -- dune build @all
 opam exec -- dune runtest
 ```
 
-The binary lands at `_build/default/bin/main.bc.exe`.
+The from-source binary lands at `_build/default/bin/main.bc.exe`.
 
 Register with Claude Code (user-scoped):
 
@@ -51,7 +64,7 @@ Restart Claude Code (or run `/mcp` → Reconnect) so the new server is picked up
 
 ### Optional: the `/caml` slash command
 
-This repo ships a small Claude Code skill that wraps the five MCP
+This repo ships a small Claude Code skill that wraps topup's MCP
 tools behind `/caml`. It is project-scoped (lives under
 `.claude/skills/caml/`) so it activates automatically when Claude
 Code is run inside a `topup` checkout. To use it from anywhere,

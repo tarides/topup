@@ -10,8 +10,8 @@ license: "ISC"
 homepage: "https://github.com/tarides/topup"
 bug-reports: "https://github.com/tarides/topup/issues"
 depends: [
-  "ocaml" {>= "5.1"}
   "dune" {>= "3.6"}
+  "ocaml" {>= "5.1"}
   "ocamlfind"
   "yojson"
   "base64"

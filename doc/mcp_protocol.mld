@@ -1,0 +1,281 @@
+{0 topup MCP protocol}
+
+[topup] implements the
+{{:https://modelcontextprotocol.io}Model Context Protocol} over JSON-RPC 2.0.
+This page is the authoritative interface contract for the [topup] and
+[topup-opt] executables: the wire transport, the session lifecycle, the routing
+model, every tool, and the environment/convention details a client needs.
+
+{1 Transport}
+
+Messages are JSON-RPC 2.0 objects, one per line (newline-delimited UTF-8),
+exchanged over one of two channels:
+
+- {b stdio} (default) — the client launches [topup] and speaks on its
+  stdin/stdout. This is the normal MCP integration path.
+- {b Unix domain socket} — [topup --socket <path>] serves one client at a time
+  on an [AF_UNIX] stream socket, created owner-only (mode [0600]). Toplevel
+  state persists across successive connections to the same socket, so a client
+  may disconnect and reconnect without losing its bindings.
+
+{1 Session lifecycle}
+
+The advertised protocol version is [2024-11-05].
+
+{2 initialize}
+
+Returns [protocolVersion], [capabilities] (namely [{ "tools": {} }]),
+[serverInfo] ([{ "name": "topup", "version": "0.1.0" }]), and an [instructions]
+string that advertises any currently-registered remote hosts and named local
+sessions (with their descriptions), so the client can discover routing targets.
+
+{2 tools/list}
+
+Returns the [tools] array — the descriptors documented under {!section:tools}
+below. Two internal tools, [_send_blob] and [_recv_blob], back the file-transfer
+back-channel and are deliberately {e not} advertised here.
+
+{2 tools/call}
+
+A standard MCP call with [{ "name": <tool>, "arguments": <object> }]. The result
+carries a [content] array holding a single [text] item whose payload is a JSON
+string (the tool's structured result), plus an [isError] boolean.
+
+{2 notifications/cancelled}
+
+Interrupts an in-flight evaluation. It honours optional [host]/[session] fields
+to target a routed session; with neither, it cancels the local in-process eval.
+The [cancel] tool is the request-shaped equivalent.
+
+{1 Routing model}
+
+A single [topup] registration can drive three kinds of session:
+
+- the {b local in-process} toplevel — the default; omit both [host] and
+  [session], or pass the literal ["local"];
+- a {b named local subprocess} session, brought up with [start_local_session]
+  and selected per-call with [session];
+- a {b remote} toplevel reached over an SSH tunnel, brought up with
+  [start_session] and selected per-call with [host].
+
+[host] and [session] are {b mutually exclusive} — pass at most one. Most tools
+accept them; the session- and host-management tools ([start_session],
+[restart_session], [update_host], [start_local_session],
+[restart_local_session], [update_local_session]) act on the registry itself and
+do not route.
+
+{1:tools Tools}
+
+Parameter lists mark each field {b required} or {e optional}. Unless noted,
+every tool also accepts the optional [host] and [session] routing fields
+described above.
+
+{2 Core evaluation}
+
+{3 eval}
+
+Evaluate one or more OCaml phrases in the persistent toplevel.
+
+- {b [source]} (string) — the phrase(s) to evaluate.
+- {e [timeout]} (number) — seconds before the evaluation is interrupted.
+
+Returns [{ value_repr, type, stdout, stderr, warnings, error }]. Background
+activity (Lwt/Eio fibres, [Thread.create], [Domain.spawn]) is the caller's
+responsibility: it keeps running, is not killed by [reset], and its later
+writes may land in a subsequent capture — join/await before the top-level
+expression returns. Oversized [value_repr]/[stdout]/[stderr] are truncated
+inline with a [ …[+N bytes; full at <path>] ] marker and spilled to the path in
+the matching [*_overflow] field.
+
+{3 eval_batch}
+
+Evaluate a list of source strings sequentially; earlier bindings are visible to
+later elements.
+
+- {b [sources]} (array of string).
+- {e [timeout]} (number) — {e per element}, not per batch.
+
+Returns [{ results, stopped_on_error }]; [results] holds every element
+evaluated, in order, stopping at the first with a non-null [error]. Amortises
+protocol overhead for tight inner loops, especially when routed.
+
+{3 env}
+
+List user-defined value bindings as [(name, type)] — the way to recall a
+workspace built up across previous [eval] calls.
+
+- {e [filter]} (string) — substring filter on binding names.
+- {e [all]} (boolean) — include stdlib/library bindings (hidden by default).
+
+{3 lookup}
+
+Inspect a single binding by name: type, source location, and a small value
+preview.
+
+- {b [name]} (string).
+
+{3 reset}
+
+Discard the toplevel environment and start fresh. Also drops [#load]-ed
+libraries (re-issue [load] after). For branching or recovery, prefer [restore],
+which yields a known-good workspace rather than an empty one.
+
+{3 cancel}
+
+Interrupt the currently-running evaluation (SIGINT to the eval thread; surfaces
+as [evaluation timed out]). Bare [cancel] targets the local in-process eval and
+does not broadcast across hosts.
+
+{3 load}
+
+Dynlink a compiled archive into the live session. Extensions follow the driver:
+[.cma]/[.cmo] under [topup], [.cmxs] under [topup-opt].
+
+- {b [path]} (string) — absolute; its directory is added to the load path so
+  the sibling [.cmi] is found.
+
+Loaded modules become available to later [eval] calls under their unit names.
+Loaded archives are {e not} replayed on [reset] and {e not} recorded in the
+phrase log. With [host], the path must exist on the remote filesystem.
+
+{2 Branching state}
+
+{3 checkpoint}
+
+Snapshot the current phrase log under [label] as plain OCaml source at
+[$TOPUP_CHECKPOINT_DIR/<label>.ml] (default [~/.topup/checkpoints/]), written
+atomically. Overwrites any prior snapshot with the same label.
+
+- {b [label]} (string) — must match [[A-Za-z0-9._-]+], no leading dot, no [..].
+
+Requires phrase logging enabled ([TOPUP_LOG] unset or writable). With [host],
+the snapshot lives under the remote user's home.
+
+{3 restore}
+
+Reset the environment and replay the checkpoint named [label], replacing the
+live phrase log with the checkpoint's contents first so the two stay
+consistent.
+
+- {b [label]} (string).
+
+Returns the same shape as [eval] (a non-null [error] means a phrase failed
+mid-replay, leaving an intermediate state). [#load]-ed libraries are not in the
+log — re-issue [load] afterwards. Checkpoints are per-host.
+
+{2 Promotion}
+
+{3 compile_to_binary}
+
+Promote the current session into a standalone native binary: the phrase log is
+dumped into a synthesised dune project under [out], built, and the executable
+copied to [out/main.exe].
+
+- {b [entry]} (string) — a binding in scope of type [unit -> _]; the wrapper is
+  [let () = ignore (<entry> ())].
+- {b [out]} (string) — absolute output directory; created on demand, refused if
+  non-empty without a prior [.topup-promote] marker.
+- {e [libraries]} (array of string) — findlib package names emitted into the
+  synthesised [(libraries ...)] stanza.
+
+Returns [{ ok, binary_path, build_log }]. Curate first by [restore]-ing a clean
+checkpoint if the log carries exploratory clutter. Limitations: [#load]-ed
+archives are not auto-linked, and [#require]-d packages not listed in
+[libraries] will fail to resolve. Requires phrase logging and [dune] on [PATH].
+
+{2 File transfer}
+
+Both directions carry the payload base64-encoded {e in-band} over the same
+JSON-RPC channel (no [scp]/[rsync]). Files are capped at [TOPUP_XFER_MAX_BYTES]
+(default 16 MiB); oversized files are rejected before any bytes are read. Writes
+are atomic ([.tmp] + rename).
+
+{3 push_file}
+
+Copy a file from the local MCP-server filesystem to the remote [host].
+
+- {b [host]} (string) — required; purely-local copies are rejected.
+- {b [local_path]} (string) — read on the MCP-server side.
+- {e [remote_path]} (string) — defaults to
+  [$TOPUP_XFER_DIR/<basename>] on the remote (default [~/.topup/xfer/]).
+
+Returns [{ remote_path, bytes }].
+
+{3 pull_file}
+
+Copy a file from the remote [host] back to the local MCP-server filesystem.
+
+- {b [host]} (string) — required.
+- {b [remote_path]} (string).
+- {e [local_path]} (string) — defaults to [$TOPUP_XFER_DIR/<basename>] locally.
+
+Returns [{ local_path, bytes }].
+
+{2 Remote hosts}
+
+{3 start_session}
+
+Bring up a remote [topup] session on [host]: opens an SSH tunnel
+([ssh -L <local>:<remote> <host> topup --socket <remote>]) and performs the
+[initialize] handshake. Idempotent against a live tunnel.
+
+- {b [host]} (string).
+- {e [remote_socket]} (string) — remote socket path (default
+  [~/.topup/sockets/topup.sock]).
+
+Returns the registered host name and remote socket path, or a structured error
+with [phase="connect"].
+
+{3 restart_session}
+
+Kill the tunnel for [host] and bring it up again (for a wedged tunnel or crashed
+daemon; for a fresh OCaml environment use [reset] instead).
+
+- {b [host]} (string).
+
+{3 update_host}
+
+Set or replace the [description] and/or [os] metadata for a registered host;
+surfaced in the [instructions] block at the next [initialize]. Only the fields
+you pass are changed.
+
+- {b [host]} (string).
+- {e [description]} (string), {e [os]} (string).
+
+{2 Named local sessions}
+
+{3 start_local_session}
+
+Bring up a named local [topup] subprocess and optionally pre-warm it. Idempotent
+against a live session.
+
+- {b [session]} (string).
+- {e [prewarm]} (string) — a path [#use]-d in the subprocess before returning;
+  a failing prewarm kills it and surfaces the error.
+- {e [pool]} (number) — when [> 1], also spawns siblings [<session>.1] …
+  [<session>.(pool-1)] sharing the prewarm, so [restore] against a sibling
+  branches off the primary without cold-load cost.
+
+{3 restart_local_session}
+
+Kill the subprocess for [session] and bring it up again with the same prewarm.
+
+- {b [session]} (string).
+
+{3 update_local_session}
+
+Set or replace the [prewarm] path and/or [pool] size for a registered session
+(persisted to [~/.topup/sessions.json]). Does not affect the running
+subprocess — call [restart_local_session] to apply.
+
+- {b [session]} (string).
+- {e [prewarm]} (string), {e [pool]} (number).
+
+{1 Environment variables}
+
+- [TOPUP_XFER_DIR] — default directory for [push_file]/[pull_file]
+  (default [~/.topup/xfer/]; [=off] requires explicit paths).
+- [TOPUP_XFER_MAX_BYTES] — file-transfer size cap (default 16 MiB).
+- [TOPUP_CHECKPOINT_DIR] — checkpoint directory (default [~/.topup/checkpoints/]).
+- [TOPUP_LOG] — phrase-log path; must be unset or writable for [checkpoint],
+  [restore], and [compile_to_binary] to work.

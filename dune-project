@@ -22,7 +22,6 @@
   "topup wraps the OCaml toplevel as a Model Context Protocol server, letting an LLM keep typed working memory across conversation turns. Bindings persist between eval calls; the model carries only names and types in its context.")
  (depends
   (ocaml (>= 5.1))
-  (dune (>= 3.6))
   ocamlfind
   yojson
   base64))

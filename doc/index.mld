@@ -1,0 +1,58 @@
+{0 topup}
+
+[topup] is a persistent OCaml toplevel exposed as a
+{{:https://modelcontextprotocol.io}Model Context Protocol} (MCP) server. It
+lets an LLM keep {e typed working memory} across conversation turns: phrases
+run inside a long-lived toplevel and bindings persist between [eval] calls, so
+the model carries only names and types in its context while the toplevel holds
+the values. The OCaml type system makes that recall sound — the compiler
+catches a stale or mistyped reference before evaluation.
+
+[topup] is a {b command-line program, not a library}: it installs two
+executables and exposes no OCaml API. Everything a client interacts with is the
+MCP interface described in {!page-mcp_protocol}.
+
+{1 Installation}
+
+{[
+opam install topup
+]}
+
+This installs two binaries:
+
+- [topup] — the bytecode driver (default); [#load] accepts [.cma]/[.cmo].
+- [topup-opt] — the native driver (phrases compiled with [ocamlopt -shared]
+  and dynamically loaded); [#load] accepts [.cmxs].
+
+[topup] requires OCaml 5.1 or newer.
+
+{1 Registering with an MCP client}
+
+[topup] speaks MCP over stdio by default. With Claude Code:
+
+{[
+claude mcp add topup "$(command -v topup)"
+]}
+
+or, project-scoped, drop a [.mcp.json] at the repository root:
+
+{[
+{
+  "mcpServers": {
+    "topup": { "command": "/absolute/path/to/topup" }
+  }
+}
+]}
+
+Alternatively, [topup] can serve a single client over a Unix domain socket,
+with toplevel state persisting across successive connections:
+
+{[
+topup --socket /path/to/topup.sock
+]}
+
+{1 The MCP protocol}
+
+See {!page-mcp_protocol} for the wire transport, the initialize / tools
+handshake, the full tool catalogue, and the host/session routing model that
+lets one registration drive local, subprocess, and remote toplevels.
