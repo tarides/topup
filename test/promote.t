@@ -7,7 +7,7 @@ Hermetic dirs so the cram fixture doesn't depend on `$HOME`.
   $ TOPUP_LOG="$PWD/history.ml" \
   > TOPUP_CHECKPOINT_DIR="$PWD/ckpt" \
   > TOPUP_SPILL_DIR="$PWD/spill" \
-  > topup --socket "$PWD/topup.sock" &
+  > topup --socket topup.sock &
   $ SERVER_PID=$!
   $ trap 'kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do

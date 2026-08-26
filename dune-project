@@ -1,7 +1,7 @@
 (lang dune 3.6)
 
 (name topup)
-(version 0.1.0)
+(version 0.1.1)
 
 (generate_opam_files true)
 
@@ -21,7 +21,7 @@
  (description
   "topup wraps the OCaml toplevel as a Model Context Protocol server, letting an LLM keep typed working memory across conversation turns. Bindings persist between eval calls; the model carries only names and types in its context.")
  (depends
-  (ocaml (>= 5.1))
+  (ocaml (>= 5.3))
   ocamlfind
-  yojson
-  base64))
+  (yojson (>= 2.0.0))
+  (base64 (>= 3.0.0))))

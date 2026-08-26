@@ -12,7 +12,7 @@ persistence off.
 
 Start the "remote" daemon — this is the topup the routed calls land on.
 
-  $ topup --socket "$PWD/remote.sock" &
+  $ topup --socket remote.sock &
   $ REMOTE_PID=$!
   $ trap 'kill "$REMOTE_PID" $LOCAL_PID 2>/dev/null; wait 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -24,8 +24,8 @@ Start the "local" daemon — this is the one we'll send routed requests
 to. The env-var hook tells `start_session` to use the cram-local
 socket instead of spawning SSH.
 
-  $ TOPUP_HOST_SOCKET_TESTHOST="$PWD/remote.sock" \
-  > topup --socket "$PWD/local.sock" &
+  $ TOPUP_HOST_SOCKET_TESTHOST=remote.sock \
+  > topup --socket local.sock &
   $ LOCAL_PID=$!
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
   >   if [ -S local.sock ]; then break; fi
@@ -36,7 +36,7 @@ socket instead of spawning SSH.
 in the `instructions` block.
 
   $ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'Known hosts'
   1
 
@@ -45,7 +45,7 @@ payload (a JSON string in the MCP `text` content) carries `\"ok\":true`.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"testhost"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"ok\\":true'
   1
 
@@ -56,7 +56,7 @@ routed call. State must persist on the remote daemon.
   >   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"testhost"}}}' \
   >   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"eval","arguments":{"host":"testhost","source":"let routed = 11 * 11;;"}}}' \
   >   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"eval","arguments":{"host":"testhost","source":"routed;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" > out.json
+  >   | topup --proxy local.sock > out.json
   $ grep -c '\\"value_repr\\":\\"121\\"' out.json
   2
 
@@ -65,7 +65,7 @@ visible.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"eval","arguments":{"source":"routed;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"phase\\":\\"typecheck\\"'
   1
 
@@ -73,7 +73,7 @@ An unknown host returns a structured error rather than crashing.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"eval","arguments":{"host":"nope","source":"1+1;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '"isError":true'
   1
 
@@ -84,7 +84,7 @@ realistic delivery path).
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"-oProxyCommand=touch pwned"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'invalid host'
   1
   $ [ -e pwned ] && echo PWNED || echo safe
@@ -96,7 +96,7 @@ realistic delivery path).
   $ printf '%s\n%s\n' \
   >   '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"update_host","arguments":{"host":"testhost","description":"cram fixture"}}}' \
   >   '{"jsonrpc":"2.0","id":9,"method":"initialize"}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'cram fixture'
   1
 

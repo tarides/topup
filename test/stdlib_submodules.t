@@ -10,7 +10,7 @@ the issue but the assertion guards against future regressions.
 
 Byte driver — these aliases must resolve without `#require`.
 
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup --socket "$PWD/byte.sock" &
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup --socket byte.sock &
   $ BYTE_PID=$!
   $ trap 'kill "$BYTE_PID" 2>/dev/null; wait "$BYTE_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -31,7 +31,7 @@ Byte driver — these aliases must resolve without `#require`.
 
 Native driver — same assertion against `topup-opt`.
 
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup-opt --socket "$PWD/native.sock" &
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup-opt --socket native.sock &
   $ OPT_PID=$!
   $ trap 'kill "$OPT_PID" 2>/dev/null; wait "$OPT_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do

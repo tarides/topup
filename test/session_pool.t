@@ -21,9 +21,9 @@ named sessions "a" and "b". They each need their own log/checkpoint
 dir so they don't clobber each other; the checkpoint dir is shared so
 branching is visible.
 
-  $ TOPUP_LOG="$PWD/a.log" topup --socket "$PWD/a.sock" &
+  $ TOPUP_LOG="$PWD/a.log" topup --socket a.sock &
   $ A_PID=$!
-  $ TOPUP_LOG="$PWD/b.log" topup --socket "$PWD/b.sock" &
+  $ TOPUP_LOG="$PWD/b.log" topup --socket b.sock &
   $ B_PID=$!
   $ trap 'kill "$A_PID" "$B_PID" "$LOCAL_PID" 2>/dev/null; wait 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -34,9 +34,9 @@ branching is visible.
 Start the front server. Two session hooks tell `start_local_session`
 to use the daemons we already have, no subprocess spawn.
 
-  $ TOPUP_SESSION_SOCKET_A="$PWD/a.sock" \
-  > TOPUP_SESSION_SOCKET_B="$PWD/b.sock" \
-  > topup --socket "$PWD/local.sock" &
+  $ TOPUP_SESSION_SOCKET_A=a.sock \
+  > TOPUP_SESSION_SOCKET_B=b.sock \
+  > topup --socket local.sock &
   $ LOCAL_PID=$!
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
   >   if [ -S local.sock ]; then break; fi
@@ -48,7 +48,7 @@ to use the daemons we already have, no subprocess spawn.
   $ printf '%s\n%s\n' \
   >   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_local_session","arguments":{"session":"a"}}}' \
   >   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_local_session","arguments":{"session":"b"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"ok\\":true'
   2
 
@@ -57,7 +57,7 @@ Bindings on "a" do NOT leak to "b" — the subprocesses are isolated.
   $ printf '%s\n%s\n' \
   >   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"eval","arguments":{"session":"a","source":"let x = 11 * 11;;"}}}' \
   >   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"eval","arguments":{"session":"b","source":"x;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" > out.json
+  >   | topup --proxy local.sock > out.json
   $ grep -c '\\"value_repr\\":\\"121\\"' out.json
   1
   $ grep -c '\\"phase\\":\\"typecheck\\"' out.json
@@ -72,7 +72,7 @@ returns it again — two occurrences total.
   >   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"checkpoint","arguments":{"session":"a","label":"p1"}}}' \
   >   '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"restore","arguments":{"session":"b","label":"p1"}}}' \
   >   '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"eval","arguments":{"session":"b","source":"x;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" > branched.json
+  >   | topup --proxy local.sock > branched.json
   $ grep -c '\\"value_repr\\":\\"121\\"' branched.json
   2
 
@@ -81,7 +81,7 @@ returns it again — two occurrences total.
   $ printf '%s\n%s\n' \
   >   '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"reset","arguments":{"session":"a"}}}' \
   >   '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"eval","arguments":{"session":"b","source":"x;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"value_repr\\":\\"121\\"'
   1
 
@@ -89,7 +89,7 @@ returns it again — two occurrences total.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"eval","arguments":{"session":"a","host":"h","source":"1;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'mutually exclusive'
   1
 
@@ -97,7 +97,7 @@ returns it again — two occurrences total.
 block.
 
   $ printf '%s\n' '{"jsonrpc":"2.0","id":11,"method":"initialize"}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'Known sessions'
   1
 

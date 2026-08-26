@@ -3,7 +3,7 @@ End-to-end coverage of the native driver (`topup-opt`). Mirrors
 compiled with `ocamlopt -shared` and Dynlink-loaded into the running
 process.
 
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup-opt --socket "$PWD/topup.sock" &
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup-opt --socket topup.sock &
   $ SERVER_PID=$!
   $ trap 'kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do

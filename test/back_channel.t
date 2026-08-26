@@ -23,7 +23,7 @@ by the muxed hook when the local daemon connects, so a routed
 `Topup.read_back` reaches back across the SSH-substitute socket
 rather than reading from the remote's own filesystem.
 
-  $ topup --socket "$PWD/remote.sock" &
+  $ topup --socket remote.sock &
   $ REMOTE_PID=$!
   $ trap 'kill "$REMOTE_PID" $LOCAL_PID 2>/dev/null; wait 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -33,8 +33,8 @@ rather than reading from the remote's own filesystem.
 
 Spawn the local daemon with the test hook pointing at the remote.
 
-  $ TOPUP_HOST_SOCKET_TESTHOST="$PWD/remote.sock" \
-  > topup --socket "$PWD/local.sock" &
+  $ TOPUP_HOST_SOCKET_TESTHOST=remote.sock \
+  > topup --socket local.sock &
   $ LOCAL_PID=$!
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
   >   if [ -S local.sock ]; then break; fi
@@ -45,7 +45,7 @@ Bring the route up.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"testhost"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"ok\\":true'
   1
 
@@ -63,7 +63,7 @@ over the back channel.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"host":"testhost","source":"let b = Topup.read_back \"'$PWD'/input.bin\" in Topup.write_back \"'$PWD'/round-trip.bin\" b; Bytes.length b;;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"value_repr\\":\\"21\\"'
   1
   $ cmp input.bin round-trip.bin && echo same
@@ -77,9 +77,9 @@ surfaces the error message in its exception.
   $ kill "$LOCAL_PID" 2>/dev/null
   $ wait "$LOCAL_PID" 2>/dev/null
   $ head -c 4096 /dev/zero > big.bin
-  $ TOPUP_HOST_SOCKET_TESTHOST="$PWD/remote.sock" \
+  $ TOPUP_HOST_SOCKET_TESTHOST=remote.sock \
   > TOPUP_XFER_MAX_BYTES=1024 \
-  > topup --socket "$PWD/local.sock" &
+  > topup --socket local.sock &
   $ LOCAL_PID=$!
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
   >   if [ -S local.sock ]; then break; fi
@@ -88,6 +88,6 @@ surfaces the error message in its exception.
   $ printf '%s\n%s\n' \
   >   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"testhost"}}}' \
   >   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"host":"testhost","source":"let _ = Topup.read_back \"'$PWD'/big.bin\" in ();;"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c 'file too large'
   1

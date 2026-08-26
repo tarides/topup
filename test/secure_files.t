@@ -10,7 +10,7 @@ daemon or read host/session metadata.
 
 A "remote" daemon to register against (via the no-SSH test hook).
 
-  $ topup --socket "$PWD/remote.sock" &
+  $ topup --socket remote.sock &
   $ REMOTE_PID=$!
   $ trap 'kill "$REMOTE_PID" $LOCAL_PID 2>/dev/null; wait 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -20,8 +20,8 @@ A "remote" daemon to register against (via the no-SSH test hook).
 
 The local daemon's listening socket is created owner-only.
 
-  $ TOPUP_HOST_SOCKET_TESTHOST="$PWD/remote.sock" \
-  > topup --socket "$PWD/local.sock" &
+  $ TOPUP_HOST_SOCKET_TESTHOST=remote.sock \
+  > topup --socket local.sock &
   $ LOCAL_PID=$!
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
   >   if [ -S local.sock ]; then break; fi
@@ -34,7 +34,7 @@ Registering a host persists `hosts.json` owner-only.
 
   $ printf '%s\n' \
   >   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_session","arguments":{"host":"testhost"}}}' \
-  >   | topup --proxy "$PWD/local.sock" \
+  >   | topup --proxy local.sock \
   >   | grep -c '\\"ok\\":true'
   1
   $ stat -c %a hosts.json

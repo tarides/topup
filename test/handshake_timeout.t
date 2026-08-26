@@ -8,11 +8,11 @@ returns a structured error.
 
   $ export TOPUP_LOG=off
   $ export TOPUP_HOSTS_FILE=off
-  $ export TOPUP_HOST_SOCKET_DEAFHOST="$PWD/deaf.sock"
+  $ export TOPUP_HOST_SOCKET_DEAFHOST=deaf.sock
 
 Bring up a deaf Unix-socket server in place of the daemon.
 
-  $ ./deaf_socket_server.bc.exe "$PWD/deaf.sock" >/dev/null &
+  $ ./deaf_socket_server.bc.exe deaf.sock >/dev/null &
   $ DEAF_PID=$!
   $ trap 'kill "$DEAF_PID" 2>/dev/null; wait 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do

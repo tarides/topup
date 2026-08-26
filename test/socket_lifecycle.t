@@ -11,7 +11,7 @@ Bad invocations exit 2 with a usage line.
 
 Boot a daemon and confirm the socket is bound.
 
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup --socket "$PWD/topup.sock" &
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill" topup --socket topup.sock &
   $ SERVER_PID=$!
   $ trap 'kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -23,8 +23,8 @@ Boot a daemon and confirm the socket is bound.
 
 A second daemon on the same path is refused with exit 1.
 
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill2" topup --socket "$PWD/topup.sock"
-  topup-mcp: socket $TESTCASE_ROOT/topup.sock is in use by another process
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill2" topup --socket topup.sock
+  topup-mcp: socket topup.sock is in use by another process
   [1]
 
 Shutting the daemon down via SIGTERM unlinks the socket.
@@ -40,7 +40,7 @@ fresh daemon — it is unlinked and rebound.
   $ touch topup.sock
   $ [ -f topup.sock ] && [ ! -S topup.sock ] && echo "stale file present" || echo "wrong setup"
   stale file present
-  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill3" topup --socket "$PWD/topup.sock" &
+  $ TOPUP_LOG=off TOPUP_SPILL_DIR="$PWD/spill3" topup --socket topup.sock &
   $ SERVER_PID=$!
   $ trap 'kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null' EXIT
   $ for _ in 1 2 3 4 5 6 7 8 9 10; do
