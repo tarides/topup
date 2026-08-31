@@ -36,9 +36,18 @@ let initialize_request : Yojson.Safe.t =
       ("method", `String "initialize");
     ]
 
-let do_handshake oc ic =
+(* Bound the handshake read with a [select]-based deadline
+   ([Rpc.read_message_deadline]) rather than a blocking buffered read: a
+   wedged subprocess that accepts the socket but never completes the
+   [initialize] handshake would otherwise hang [open_conn] forever. See
+   the same guard in [Remote_host]. The read consumes exactly the
+   handshake frame, so [ic] stays pristine for the rest of the session. *)
+let handshake_read_timeout = 2.0
+
+let do_handshake sock oc =
   Rpc.write_message oc initialize_request;
-  match Rpc.read_message ic with
+  let deadline = Unix.gettimeofday () +. handshake_read_timeout in
+  match Rpc.read_message_deadline sock ~deadline with
   | Some j -> j
   | None -> failwith "local session: EOF during initialize"
 
@@ -109,8 +118,11 @@ let try_connect_and_handshake ~path =
   | sock -> (
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
-      match do_handshake oc ic with
+      match do_handshake sock oc with
       | _ -> Ok (sock, ic, oc)
+      | exception Rpc.Timeout ->
+          (try Unix.close sock with _ -> ());
+          Error "handshake timed out"
       | exception (Failure _ | End_of_file | Sys_error _) ->
           (try Unix.close sock with _ -> ());
           Error "handshake EOF / channel closed"
@@ -194,7 +206,7 @@ let open_conn ~name ~local_socket ~prewarm =
       let sock = Proxy.connect_with_retry ~path ~timeout:10.0 in
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
-      let _ = do_handshake oc ic in
+      let _ = do_handshake sock oc in
       (match prewarm with
        | None -> ()
        | Some pre -> (
