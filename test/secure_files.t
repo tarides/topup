@@ -8,6 +8,11 @@ daemon or read host/session metadata.
   $ export TOPUP_HOSTS_FILE="$PWD/hosts.json"
   $ export TOPUP_SESSIONS_FILE="$PWD/sessions.json"
 
+Print a file's permission bits in octal, portably: GNU coreutils uses
+`stat -c %a`, BSD/macOS uses `stat -f %Lp`. Both print e.g. `600`.
+
+  $ perms() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
 A "remote" daemon to register against (via the no-SSH test hook).
 
   $ topup --socket remote.sock &
@@ -27,7 +32,7 @@ The local daemon's listening socket is created owner-only.
   >   if [ -S local.sock ]; then break; fi
   >   sleep 0.1
   > done
-  $ stat -c %a local.sock
+  $ perms local.sock
   600
 
 Registering a host persists `hosts.json` owner-only.
@@ -37,7 +42,7 @@ Registering a host persists `hosts.json` owner-only.
   >   | topup --proxy local.sock \
   >   | grep -c '\\"ok\\":true'
   1
-  $ stat -c %a hosts.json
+  $ perms hosts.json
   600
 
 (`sessions.json` is persisted by `Session_pool` through the identical

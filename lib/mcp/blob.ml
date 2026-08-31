@@ -40,6 +40,25 @@ let normalize_abs path =
 let is_within ~root p =
   p = root || String.starts_with ~prefix:(root ^ "/") p
 
+(* Canonicalise a path whose leaf components may not exist yet: [realpath]
+   the longest existing prefix, then re-append the remaining segments
+   lexically. This resolves symlinks in the existing part of the path —
+   notably macOS's [/tmp] -> [/private/tmp] and [/var] -> [/private/var] —
+   so that prefix comparisons against a [realpath]'d child are done in the
+   same namespace. Without this the confinement root stays lexical while
+   [Unix.realpath] on an existing child returns the resolved form, and an
+   in-root write is falsely rejected as a symlink escape. *)
+let realpath_lenient path =
+  let rec loop p tail =
+    match Unix.realpath p with
+    | rp -> List.fold_left Filename.concat rp tail
+    | exception Unix.Unix_error _ ->
+        let parent = Filename.dirname p in
+        if parent = p then List.fold_left Filename.concat p tail
+        else loop parent (Filename.basename p :: tail)
+  in
+  loop path []
+
 (* Confinement root for back-channel blob ops: a *remote* daemon reaching
    back into the local filesystem is confined here so a compromised remote
    (or untrusted code eval'd remotely via [Topup.read_back]/[write_back])
@@ -63,9 +82,11 @@ let resolve_path ?confine_root path : (string, string) result =
   match confine_root with
   | None -> Ok (expand_tilde path)
   | Some root ->
-      let root = normalize_abs (if Filename.is_relative root
-                                then Filename.concat (Sys.getcwd ()) root
-                                else root)
+      let root =
+        realpath_lenient
+          (normalize_abs (if Filename.is_relative root
+                          then Filename.concat (Sys.getcwd ()) root
+                          else root))
       in
       let rel =
         let p = path in
