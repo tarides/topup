@@ -10,7 +10,8 @@ type t
     [~/.topup/sockets/topup.sock]). The local end of the [-L]
     forward is randomized in [/tmp]. Raises [Failure] on SSH spawn
     failure, on connect-retry timeout, or if the initial
-    [initialize] handshake does not return within 5 seconds.
+    [initialize] handshake does not return within
+    [handshake_read_timeout] seconds (bounded by a [select] deadline).
 
     Test-only escape hatch: if the environment variable
     [TOPUP_HOST_SOCKET_<HOST>] is set (with [HOST] uppercased), no

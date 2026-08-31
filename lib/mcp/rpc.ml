@@ -41,6 +41,49 @@ let read_message ic =
   | None -> None
   | Some line -> Some (Yojson.Safe.from_string line)
 
+exception Timeout
+
+(* Read one newline-terminated frame directly from [fd] under a
+   wall-clock [deadline] (absolute [Unix.gettimeofday] seconds), using
+   [Unix.select] for readiness rather than [SO_RCVTIMEO]. The latter
+   does not reliably interrupt a blocking buffered read on every
+   platform — notably macOS/arm64, where relying on it wedged the
+   [initialize] handshake until the CI job timed out.
+
+   Reads a byte at a time and stops exactly at ['\n'], so it consumes
+   nothing past the frame and a buffered [in_channel] wrapping the same
+   [fd] can be used for the rest of the session without losing bytes.
+   Raises {!Timeout} if the deadline passes before a full frame arrives,
+   {!Message_too_large} past the cap, and returns [None] on EOF. *)
+let read_message_deadline fd ~deadline =
+  let max = max_message_bytes () in
+  let buf = Buffer.create 256 in
+  let byte = Bytes.create 1 in
+  let rec loop () =
+    let remaining = deadline -. Unix.gettimeofday () in
+    if remaining <= 0.0 then raise Timeout;
+    match Unix.select [ fd ] [] [] remaining with
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop ()
+    | [], _, _ -> raise Timeout
+    | _ -> (
+        match Unix.read fd byte 0 1 with
+        | exception
+            Unix.Unix_error ((Unix.EINTR | Unix.EAGAIN | Unix.EWOULDBLOCK), _, _)
+          ->
+            loop ()
+        | 0 -> if Buffer.length buf = 0 then None else Some (Buffer.contents buf)
+        | _ -> (
+            match Bytes.get byte 0 with
+            | '\n' -> Some (Buffer.contents buf)
+            | c ->
+                if Buffer.length buf >= max then raise (Message_too_large max);
+                Buffer.add_char buf c;
+                loop ()))
+  in
+  match loop () with
+  | None -> None
+  | Some line -> Some (Yojson.Safe.from_string line)
+
 let write_message oc msg =
   output_string oc (Yojson.Safe.to_string msg);
   output_char oc '\n';

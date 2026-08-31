@@ -42,30 +42,22 @@ let initialize_request : Yojson.Safe.t =
       ("method", `String "initialize");
     ]
 
-let do_handshake oc ic =
-  Rpc.write_message oc initialize_request;
-  match Rpc.read_message ic with
-  | Some j -> j
-  | None -> failwith "remote: EOF during initialize"
-
 (* Read deadline for the handshake response. Without this, a remote
    that accepts the TCP/UNIX connection but never writes back (e.g. a
-   stale daemon already busy with another client) blocks [input_line]
-   forever and the retry loop in [open_conn] can't make progress. The
-   socket option is cleared after a successful handshake so subsequent
-   send/recv cycles aren't bounded. *)
+   stale daemon already busy with another client) blocks the handshake
+   read forever and the retry loop in [open_conn] can't make progress.
+   The bound is enforced with [Rpc.read_message_deadline] ([select]-
+   based) rather than [SO_RCVTIMEO], which does not interrupt a blocking
+   read on all platforms (macOS/arm64 hung on it). The read consumes
+   exactly the handshake frame, leaving [ic] pristine for the session. *)
 let handshake_read_timeout = 2.0
 
-let do_handshake_bounded sock oc ic =
-  (try Unix.setsockopt_float sock Unix.SO_RCVTIMEO handshake_read_timeout
-   with Unix.Unix_error _ -> ());
-  let clear () =
-    try Unix.setsockopt_float sock Unix.SO_RCVTIMEO 0.0
-    with Unix.Unix_error _ -> ()
-  in
-  match do_handshake oc ic with
-  | j -> clear (); j
-  | exception exn -> clear (); raise exn
+let do_handshake_bounded sock oc =
+  Rpc.write_message oc initialize_request;
+  let deadline = Unix.gettimeofday () +. handshake_read_timeout in
+  match Rpc.read_message_deadline sock ~deadline with
+  | Some j -> j
+  | None -> failwith "remote: EOF during initialize"
 
 (* Try one connect + handshake. Returns [Ok (sock, ic, oc)] on success;
    [Error msg] for retryable errors (closed socket along the way);
@@ -76,8 +68,11 @@ let try_connect_and_handshake ~path =
   | sock ->
       let ic = Unix.in_channel_of_descr sock in
       let oc = Unix.out_channel_of_descr sock in
-      (match do_handshake_bounded sock oc ic with
+      (match do_handshake_bounded sock oc with
        | _ -> Ok (sock, ic, oc)
+       | exception Rpc.Timeout ->
+           (try Unix.close sock with _ -> ());
+           Error "handshake timed out"
        | exception (Failure _ | End_of_file | Sys_error _) ->
            (try Unix.close sock with _ -> ());
            Error "handshake EOF / channel closed"
